@@ -671,14 +671,95 @@ function symbolFromPdfPins(partNumber,pdfPins){
   const S={name:partNumber,shapes:[{unit:1,kind:"rect",x1:-halfW,y1:halfH,x2:halfW,y2:-halfH,filled:true}],
     pins:[],skipped:0,maxUnit:1,unitLabels:{1:"A · 单元 A"},_pdf:true};
   left.forEach((p,i)=>{const y=left.length===1?0:(left.length-1)*pitch/2-i*pitch;
-    S.pins.push({unit:1,x:-halfW-len,y,angle:0,length:len,name:p.name||"~",number:String(p.number)});});
+    S.pins.push({unit:1,x:-halfW-len,y,angle:0,length:len,name:p.name||"~",number:String(p.number),type:p.type});});
   right.forEach((p,i)=>{const y=right.length===1?0:(right.length-1)*pitch/2-i*pitch;
-    S.pins.push({unit:1,x:halfW+len,y,angle:180,length:len,name:p.name||"~",number:String(p.number)});});
+    S.pins.push({unit:1,x:halfW+len,y,angle:180,length:len,name:p.name||"~",number:String(p.number),type:p.type});});
   pwr.forEach((p,i)=>{const half=Math.ceil(pwr.length/2);
     const top=i<half, k=top?i:i-half, cnt=top?half:pwr.length-half;
     const x=cnt===1?0:-(cnt-1)*pitch/2+k*pitch;
-    S.pins.push({unit:1,x,y:top?halfH+len:-halfH-len,angle:top?270:90,length:len,name:p.name||"~",number:String(p.number)});});
+    S.pins.push({unit:1,x,y:top?halfH+len:-halfH-len,angle:top?270:90,length:len,name:p.name||"~",number:String(p.number),type:p.type});});
   return S;
+}
+
+
+// ── 导出为 KiCad .kicad_sym（KiCad 7/8/9 通用 S-expression 格式）──
+// 格式依据 KLC 与 kicad_sym 规范；生成的符号可直接加入 KiCad 9 符号库使用。
+function pinTypeToKicad(t){
+  return {input:"input",output:"output",bidirectional:"bidirectional",
+    power:"power_in",passive:"passive",no_connect:"no_connect"}[t]||"passive";
+}
+function esc(v){return String(v??"").replace(/\\/g,"\\\\").replace(/"/g,'\\"');}
+function n3(v){return (Math.round(Number(v||0)*1000)/1000).toFixed(3);}
+
+/**
+ * 把内部符号结构导出为 .kicad_sym 文本
+ * @param sym  {name,shapes,pins,maxUnit} —— parseKicadSym / symbolFromPdfPins / standardSymbol 的产物
+ * @param meta {partNumber,footprint,datasheet,manufacturer,description,source}
+ */
+function exportKicadSym(sym,meta={}){
+  const name=esc(meta.partNumber||sym.name||"PART");
+  const units=Math.max(1,sym.maxUnit||1);
+  const L=[];
+  L.push(`(kicad_symbol_lib (version 20231120) (generator "AltPart Pro") (generator_version "9.0")`);
+  L.push(`  (symbol "${name}"`);
+  L.push(`    (exclude_from_sim no) (in_bom yes) (on_board yes)`);
+  // 属性字段
+  const props=[
+    ["Reference","U",0,2.54,"no"],
+    ["Value",name,0,-2.54,"no"],
+    ["Footprint",esc(meta.footprint||""),0,-5.08,"yes"],
+    ["Datasheet",esc(meta.datasheet||""),0,-7.62,"yes"],
+    ["Description",esc(meta.description||""),0,-10.16,"yes"],
+  ];
+  if(meta.manufacturer)props.push(["Manufacturer",esc(meta.manufacturer),0,-12.7,"yes"]);
+  if(meta.source)props.push(["AltPart_Source",esc(meta.source),0,-15.24,"yes"]);
+  for(const[k,v,x,y,hide] of props){
+    L.push(`    (property "${k}" "${v}" (at ${n3(x)} ${n3(y)} 0)`);
+    L.push(`      (effects (font (size 1.27 1.27))${hide==="yes"?" (hide yes)":""})`);
+    L.push(`    )`);
+  }
+  for(let u=1;u<=units;u++){
+    const shapes=(sym.shapes||[]).filter(s=>!s.unit||s.unit===0||s.unit===u);
+    const pins=(sym.pins||[]).filter(p=>!p.unit||p.unit===0||p.unit===u);
+    L.push(`    (symbol "${name}_${u}_1"`);
+    for(const s of shapes){
+      if(s.kind==="rect"){
+        L.push(`      (rectangle (start ${n3(s.x1)} ${n3(s.y1)}) (end ${n3(s.x2)} ${n3(s.y2)})`);
+        L.push(`        (stroke (width 0.254) (type default)) (fill (type ${s.filled?"background":"none"}))`);
+        L.push(`      )`);
+      }else if(s.kind==="circle"){
+        L.push(`      (circle (center ${n3(s.cx)} ${n3(s.cy)}) (radius ${n3(s.r)})`);
+        L.push(`        (stroke (width 0.254) (type default)) (fill (type ${s.filled?"background":"none"}))`);
+        L.push(`      )`);
+      }else if(s.kind==="polyline"){
+        L.push(`      (polyline (pts ${s.points.map(p=>`(xy ${n3(p.x)} ${n3(p.y)})`).join(" ")})`);
+        L.push(`        (stroke (width 0.254) (type default)) (fill (type ${s.filled?"background":"none"}))`);
+        L.push(`      )`);
+      }else if(s.kind==="arc"){
+        L.push(`      (arc (start ${n3(s.start.x)} ${n3(s.start.y)}) (mid ${n3(s.mid.x)} ${n3(s.mid.y)}) (end ${n3(s.end.x)} ${n3(s.end.y)})`);
+        L.push(`        (stroke (width 0.254) (type default)) (fill (type none))`);
+        L.push(`      )`);
+      }
+    }
+    for(const p of pins){
+      L.push(`      (pin ${pinTypeToKicad(p.kicadType||p.type)} line (at ${n3(p.x)} ${n3(p.y)} ${Math.round(p.angle||0)}) (length ${n3(p.length||2.54)})`);
+      L.push(`        (name "${esc(p.name&&p.name!=="~"?p.name:"~")}" (effects (font (size 1.27 1.27))))`);
+      L.push(`        (number "${esc(p.number)}" (effects (font (size 1.27 1.27))))`);
+      L.push(`      )`);
+    }
+    L.push(`    )`);
+  }
+  L.push(`  )`);
+  L.push(`)`);
+  return L.join("\n");
+}
+
+function downloadText(filename,text,mime="text/plain;charset=utf-8"){
+  const blob=new Blob(["\ufeff".length?text:text],{type:mime});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);a.download=filename;
+  document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},0);
 }
 
 // ── 3D 等轴测示意（ezPLM 提供 STEP，浏览器无法直接渲染）──
@@ -911,21 +992,25 @@ function Step3DViewer({stepUrl,fileName,compact}){
 }
 
 // ═══ 图形预览面板：符号 / 封装 / 3D 三栏并排 ═══
+// eCAD 结果模块级缓存：切换 Tab 会卸载组件，重挂载时直接复用，避免重复拉取与生成
+const ECAD_CACHE=new Map();   // pn -> {fpText,fpReal,symText,symReal,ksym,kskip,srcSym,srcFp,pdfWarn,extUrl}
+
 function GraphicsPanel({d,pn}){
-  const[fpText,setFpText]=useState(null);
-  const[symText,setSymText]=useState(null);
-  const[fpReal,setFpReal]=useState(false);
-  const[symReal,setSymReal]=useState(false);
-  const[ksym,setKSym]=useState(null);
-  const[kskip,setKSkip]=useState(0);
+  const cached=ECAD_CACHE.get(pn)||null;
+  const[fpText,setFpText]=useState(cached?.fpText??null);
+  const[symText,setSymText]=useState(cached?.symText??null);
+  const[fpReal,setFpReal]=useState(cached?.fpReal??false);
+  const[symReal,setSymReal]=useState(cached?.symReal??false);
+  const[ksym,setKSym]=useState(cached?.ksym??null);
+  const[kskip,setKSkip]=useState(cached?.kskip??0);
   const[unit,setUnit]=useState(1);
-  const[loading,setLoading]=useState(true);
+  const[loading,setLoading]=useState(!cached);
   const[pin,setPin]=useState(null);
   const[zoomed,setZoomed]=useState(null);
-  const[srcSym,setSrcSym]=useState("");        // ezplm | kicad_official | pdf_datasheet | standard | synth
-  const[srcFp,setSrcFp]=useState("");          // ezplm | kicad_official | synth
-  const[pdfWarn,setPdfWarn]=useState("");
-  const[extUrl,setExtUrl]=useState({});
+  const[srcSym,setSrcSym]=useState(cached?.srcSym??"");
+  const[srcFp,setSrcFp]=useState(cached?.srcFp??"");
+  const[pdfWarn,setPdfWarn]=useState(cached?.pdfWarn??"");
+  const[extUrl,setExtUrl]=useState(cached?.extUrl??{});
   const[aiTry,setAiTry]=useState(false);       // 用户是否已选择尝试 AI 推断引脚
   const[aiBusy,setAiBusy]=useState(false);
   const fpRef=useRef(null),symRef=useRef(null);
@@ -933,6 +1018,7 @@ function GraphicsPanel({d,pn}){
   const pkg=d?.footprint||(d?.parameters||[]).find(p=>/封装|package/i.test(p.name))?.value;
 
   useEffect(()=>{
+    if(ECAD_CACHE.has(pn))return;      // 已缓存，不再重复生成
     let dead=false;
     (async()=>{
       setLoading(true);setPin(null);
@@ -1002,6 +1088,7 @@ function GraphicsPanel({d,pn}){
       if(!fSrc)fSrc=real?"ezplm":"synth";
       if(dead)return;
       setFpText(ft);setFpReal(real);setSymText(st);setSymReal(sreal);
+      ECAD_CACHE.set(pn,{fpText:ft,fpReal:real,symText:st,symReal:sreal,ksym:ks,kskip:kskp,srcSym:sSrc,srcFp:fSrc,pdfWarn:warn,extUrl:ext});
       setKSym(ks);setKSkip(kskp);setUnit(1);setSrcSym(sSrc);setSrcFp(fSrc);setPdfWarn(warn);setExtUrl(ext);setLoading(false);
     })();
     return()=>{dead=true};
@@ -1038,7 +1125,11 @@ function GraphicsPanel({d,pn}){
       const e=await r.json().catch(()=>null);
       if(e?.aiPinout?.pins?.length){
         const sp=symbolFromPdfPins(pn,e.aiPinout.pins);
-        if(sp){setKSym(sp);setSrcSym("ai_pinout");setPdfWarn(e.aiPinout.warning||"");setAiTry(true);setAiBusy(false);return;}
+        if(sp){
+          setKSym(sp);setSrcSym("ai_pinout");setPdfWarn(e.aiPinout.warning||"");setAiTry(true);setAiBusy(false);
+          const c=ECAD_CACHE.get(pn)||{};ECAD_CACHE.set(pn,{...c,ksym:sp,srcSym:"ai_pinout",pdfWarn:e.aiPinout.warning||""});
+          return;
+        }
       }
       setPdfWarn("AI 未能给出可信的引脚定义（引脚数不符或自评不确定），已保持仅编号符号");
       setAiTry(true);
@@ -1139,6 +1230,17 @@ function GraphicsPanel({d,pn}){
         {!d?.model3dUrl&&extUrl.model3d&&<a href={extUrl.model3d} target="_blank" rel="noreferrer" style={DL_BTN}>⬇ KiCad官方 STEP</a>}
         {extUrl.symbol&&<a href={extUrl.symbol} target="_blank" rel="noreferrer" style={DL_BTN}>🔗 官方符号库</a>}
         {extUrl.footprint&&<a href={extUrl.footprint} target="_blank" rel="noreferrer" style={DL_BTN}>🔗 官方封装库</a>}
+        {ksym&&srcSym!=="ezplm"&&(
+          <button onClick={()=>downloadText(`${pn}.kicad_sym`,exportKicadSym(ksym,{
+              partNumber:pn,
+              footprint:pkg?`${(srcFp==="kicad_official"&&extUrl.footprint)?extUrl.footprint.split("/").slice(-2)[0].replace(".pretty",""):"Package"}:${pkg}`:"",
+              datasheet:d?.datasheetUrl||"",manufacturer:d?.manufacturer||"",
+              description:d?.description||"",
+              source:{kicad_official:"KiCad 官方库",pdf_datasheet:"PDF 数据手册解析",standard:"品类标准符号",ai_pinout:"AI 推断(未验证)",synth:"引脚数推算(未验证)"}[srcSym]||srcSym,
+            }),"application/octet-stream")}
+            style={{...DL_BTN,cursor:"pointer",borderColor:C.greenMid,background:C.greenLight}}>
+            ⬇ 导出 {pn}.kicad_sym
+          </button>)}
       </div>)}
 
     {zoomed&&zoomed!=="model3d"&&(
@@ -1321,7 +1423,6 @@ function HomePage({onSubmit,busy,err}){
       <path d="M20 28h16M28 20v16" stroke={C.green} strokeWidth="2" strokeLinecap="round"/>
     </svg>
     <h2 style={{fontSize:28,fontWeight:700,color:C.green,marginBottom:8}}>元器件替代料智能推荐</h2>
-    <p style={{fontSize:14,color:C.textMute,marginBottom:28}}>本地数据库查参数 → 调整优先级与约束 → AI推荐 → 算法评分 Top5</p>
     <div style={{display:"flex",gap:8,marginBottom:14}}>
       <input value={pn} onChange={e=>setPn(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&pn.trim())onSubmit(pn.trim())}}
         placeholder="输入原始器件型号，如 STM32F103C8T6" autoFocus
