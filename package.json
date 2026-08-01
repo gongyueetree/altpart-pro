@@ -10,5 +10,8 @@
     "dev": "vercel dev",
     "deploy": "vercel --prod",
     "vendor": "node scripts/vendor-occt.mjs"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^5.4.296"
   }
 }

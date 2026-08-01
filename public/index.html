@@ -638,6 +638,35 @@ function standardSymbol(kind,partNumber){
   return S;
 }
 
+// 用 PDF 数据手册提取的引脚构建符号（引脚名与类型来自 datasheet）
+function symbolFromPdfPins(partNumber,pdfPins){
+  const list=(pdfPins||[]).filter(p=>p&&p.number);
+  if(list.length<2)return null;
+  const isPwr=p=>p.type==="power";
+  const isIn=p=>p.type==="input";
+  const isOut=p=>p.type==="output";
+  // KiCad 惯例：输入在左，输出在右，电源上下
+  const left=list.filter(p=>isIn(p)||(!isOut(p)&&!isPwr(p)));
+  const right=list.filter(isOut);
+  const pwr=list.filter(isPwr);
+  const rows=Math.max(left.length,right.length,1);
+  const pitch=2.54,len=2.54;
+  const halfH=Math.max(5.08,(rows-1)*pitch/2+2.54);
+  const maxName=Math.max(4,...list.map(p=>String(p.name||"").length));
+  const halfW=Math.max(7.62,Math.min(30.48,maxName*1.4+5.08));
+  const S={name:partNumber,shapes:[{unit:1,kind:"rect",x1:-halfW,y1:halfH,x2:halfW,y2:-halfH,filled:true}],
+    pins:[],skipped:0,maxUnit:1,unitLabels:{1:"A · 单元 A"},_pdf:true};
+  left.forEach((p,i)=>{const y=left.length===1?0:(left.length-1)*pitch/2-i*pitch;
+    S.pins.push({unit:1,x:-halfW-len,y,angle:0,length:len,name:p.name||"~",number:String(p.number)});});
+  right.forEach((p,i)=>{const y=right.length===1?0:(right.length-1)*pitch/2-i*pitch;
+    S.pins.push({unit:1,x:halfW+len,y,angle:180,length:len,name:p.name||"~",number:String(p.number)});});
+  pwr.forEach((p,i)=>{const half=Math.ceil(pwr.length/2);
+    const top=i<half, k=top?i:i-half, cnt=top?half:pwr.length-half;
+    const x=cnt===1?0:-(cnt-1)*pitch/2+k*pitch;
+    S.pins.push({unit:1,x,y:top?halfH+len:-halfH-len,angle:top?270:90,length:len,name:p.name||"~",number:String(p.number)});});
+  return S;
+}
+
 // ── 3D 等轴测示意（ezPLM 提供 STEP，浏览器无法直接渲染）──
 function Model3DSVG({pkg,svgRef,compact}){
   const g=parsePackage(pkg);
@@ -878,7 +907,11 @@ function GraphicsPanel({d,pn}){
   const[unit,setUnit]=useState(1);
   const[loading,setLoading]=useState(true);
   const[pin,setPin]=useState(null);
-  const[zoomed,setZoomed]=useState(null);      // "symbol" | "footprint" | "model3d" | null
+  const[zoomed,setZoomed]=useState(null);
+  const[srcSym,setSrcSym]=useState("");        // ezplm | kicad_official | pdf_datasheet | standard | synth
+  const[srcFp,setSrcFp]=useState("");          // ezplm | kicad_official | synth
+  const[pdfWarn,setPdfWarn]=useState("");
+  const[extUrl,setExtUrl]=useState({});        // 官方库来源链接
   const fpRef=useRef(null),symRef=useRef(null);
   const bigFpRef=useRef(null),bigSymRef=useRef(null);
   const pkg=d?.footprint||(d?.parameters||[]).find(p=>/封装|package/i.test(p.name))?.value;
@@ -909,21 +942,50 @@ function GraphicsPanel({d,pn}){
           }
         }catch(e){}
       }
+      // ── eCAD 级联：ezPLM → KiCad 官方库 → PDF 数据手册 → 标准/推算 ──
+      let sSrc=sreal?"ezplm":"", fSrc=real?"ezplm":"", warn="", ext={};
+      if(!ks&&!st||!real){
+        try{
+          const gp0=parsePackage(pkg);
+          const kindGuess=detectSymbolKind(`${d?.category||""} ${d?.description||""}`)||
+            (/mcu|微控制器|microcontroller/i.test(`${d?.category||""}`)?"mcu":"");
+          const q=new URLSearchParams({pn});
+          if(pkg)q.set("footprint",pkg);
+          if(kindGuess)q.set("kind",String(kindGuess).toLowerCase());
+          if(d?.datasheetUrl)q.set("datasheet",d.datasheetUrl);
+          if(gp0?.pins)q.set("pins",String(gp0.pins));
+          const r=await fetch(`/api/v2/ecad?${q}`);
+          const e=await r.json().catch(()=>null);
+          if(e?.success){
+            if(!ks&&!st&&e.symbol?.text){
+              try{const ps=parseKicadSym(e.symbol.text);ks=ps;kskp=ps.skipped;sSrc="kicad_official";ext.symbol=e.symbol.url;}catch(err){}
+            }
+            if(!ks&&!st&&e.pdfPins?.pins?.length){
+              const sp=symbolFromPdfPins(pn,e.pdfPins.pins);
+              if(sp){ks=sp;sSrc="pdf_datasheet";warn=e.pdfPins.warning||"";}
+            }
+            if(!real&&e.footprint?.text){ft=e.footprint.text;real=true;fSrc="kicad_official";ext.footprint=e.footprint.url;}
+            if(e.model3d?.url)ext.model3d=e.model3d.url;
+          }
+        }catch(err){}
+      }
       if(!ks&&!st){
-        // 品类标准符号（电阻/电容/二极管等图形是标准化的，生成即准确）
         const kind=detectSymbolKind(`${d?.category||""} ${d?.description||""}`);
         const gp=parsePackage(pkg);
-        const stdOK=kind&&(!gp?.pins||gp.pins<=3||kind==="OPAMP");   // 引脚数需与标准符号相符
-        if(stdOK)ks=standardSymbol(kind,pn);
+        // 标准符号的引脚数必须与实际封装一致（教训：AD8331ARQZ 是 SSOP-20，曾被套 5 脚运放符号）
+        let stdOK=false;
+        if(kind){const probe=standardSymbol(kind,pn);stdOK=!!probe&&(!gp?.pins||gp.pins===probe.pins.length);}
+        if(stdOK){ks=standardSymbol(kind,pn);sSrc="standard";}
         if(!ks){
           const pinAttr=(d?.parameters||[]).find(x=>/引脚定义|pinout|pin\s*name/i.test(x.name));
           const names=pinAttr?String(pinAttr.value).split(/[,，;；]/).map(t=>t.trim()):null;
-          ks=synthSymbol(pn,gp?.pins||8,names);
+          ks=synthSymbol(pn,gp?.pins||8,names);sSrc="synth";
         }
       }
+      if(!fSrc)fSrc=real?"ezplm":"synth";
       if(dead)return;
       setFpText(ft);setFpReal(real);setSymText(st);setSymReal(sreal);
-      setKSym(ks);setKSkip(kskp);setUnit(1);setLoading(false);
+      setKSym(ks);setKSkip(kskp);setUnit(1);setSrcSym(sSrc);setSrcFp(fSrc);setPdfWarn(warn);setExtUrl(ext);setLoading(false);
     })();
     return()=>{dead=true};
   },[d,pn,pkg]);
@@ -948,9 +1010,15 @@ function GraphicsPanel({d,pn}){
     }
   },[zoomed,fpText,symText,ksym,pin,unit]);
 
-  const symOK=symReal&&!ksym?._synth&&!ksym?._std;
-  const symStd=!!ksym?._std;      // 品类标准符号
-  const symAI=!symOK&&!symStd;    // 按引脚数推算
+  const SRC_BADGE={
+    ezplm:{t:"✓ ezPLM 库文件",c:C.green,bg:C.greenLight,b:C.greenMid,tip:"来自 ezPLM 元器件库的原始 KiCad 文件"},
+    kicad_official:{t:"✓ KiCad 官方库",c:C.green,bg:C.greenLight,b:C.greenMid,tip:"来自 KiCad 官方库 (gitlab.com/kicad/libraries)，符合 KLC 规范"},
+    pdf_datasheet:{t:"◇ PDF数据手册生成",c:C.indigo,bg:C.indigoBg,b:C.indigoBorder,tip:"由程序解析 datasheet 引脚表生成，引脚名与类型来自原文，图形排布为自动布局，需人工确认"},
+    standard:{t:"◇ 标准符号(自动生成)",c:C.indigo,bg:C.indigoBg,b:C.indigoBorder,tip:"电阻/电容/二极管等为 IEC/IEEE 标准图形，依品类生成；引脚定义请以 datasheet 为准"},
+    synth:{t:"⚠ AI生成(示意)",c:C.amber,bg:C.amberBg,b:"#f0dca0",tip:"各库均未收录，此图按封装引脚数推算生成，引脚定义未经验证，不可用于生产"},
+  };
+  const srcBadge=k=>{const m=SRC_BADGE[k]||SRC_BADGE.synth;
+    return <span title={m.tip} style={{fontSize:10,padding:"2px 7px",borderRadius:4,whiteSpace:"nowrap",background:m.bg,color:m.c,border:`1px solid ${m.b}`}}>{m.t}</span>;};
   const badge=(ok,label)=>(
     <span title={ok?"由本系统解析绘制，字体与隐藏属性等细节可能与 KiCad 显示存在差异，以源文件为准"
                   :"ezPLM 未提供该资源，此图依封装名推算生成，非精确制造数据"}
@@ -988,20 +1056,13 @@ function GraphicsPanel({d,pn}){
               {Array.from({length:ksym.maxUnit},(_,i)=>i+1).map(u=>(
                 <option key={u} value={u}>{ksym.unitLabels?.[u]||`单元 ${u}`}</option>))}
             </select>)}
-          {symOK?badge(true,"真实 .kicad_sym")
-           :symStd?<span title="电阻/电容/二极管等的原理图符号为 IEC/IEEE 标准图形，依品类生成，引脚定义请以 datasheet 为准"
-              style={{fontSize:10,padding:"2px 7px",borderRadius:4,whiteSpace:"nowrap",background:C.indigoBg,color:C.indigo,border:`1px solid ${C.indigoBorder}`}}>◇ 标准符号(自动生成)</span>
-           :<span title="ezPLM/分销商未提供符号文件，此图按封装引脚数推算生成，引脚定义未经验证"
-              style={{fontSize:10,padding:"2px 7px",borderRadius:4,whiteSpace:"nowrap",background:C.amberBg,color:C.amber,border:"1px solid #f0dca0"}}>⚠ AI生成(示意)</span>}
+          {srcBadge(srcSym)}
         </div>,
         <svg ref={symRef} viewBox="0 0 800 520" style={{width:"100%",height:250,background:"#fffdf5",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>,
-        kskip>0?`⚠ ${kskip} 个图元未渲染`:"滚轮缩放 · 拖拽平移",
+        pdfWarn?`⚠ ${pdfWarn}`:kskip>0?`⚠ ${kskip} 个图元未渲染`:"滚轮缩放 · 拖拽平移",
         ()=>setZoomed("symbol"))}
 
-      {card("📐 PCB 封装",
-        fpReal?badge(true,"真实 .kicad_mod")
-        :<span title="ezPLM 未提供封装文件，此图依封装名与 JEDEC 惯例推算生成，非精确制造数据，不可直接用于生产"
-           style={{fontSize:10,padding:"2px 7px",borderRadius:4,whiteSpace:"nowrap",background:C.amberBg,color:C.amber,border:"1px solid #f0dca0"}}>⚠ AI生成(示意)</span>,
+      {card("📐 PCB 封装",srcBadge(srcFp),
         <svg ref={fpRef} viewBox="0 0 800 520" style={{width:"100%",height:250,background:"#fff",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>,
         "滚轮缩放 · 拖拽平移",
         ()=>setZoomed("footprint"))}
@@ -1026,6 +1087,9 @@ function GraphicsPanel({d,pn}){
         {d?.symbolUrl&&<a href={proxyRes(d.symbolUrl)} target="_blank" rel="noreferrer" download style={DL_BTN}>⬇ 符号文件</a>}
         {d?.footprintFileUrl&&<a href={proxyRes(d.footprintFileUrl)} target="_blank" rel="noreferrer" download style={DL_BTN}>⬇ {d.footprintFileName||"KiCad 封装"}</a>}
         {d?.model3dUrl&&<a href={proxyRes(d.model3dUrl)} target="_blank" rel="noreferrer" download style={DL_BTN}>⬇ {d.model3dFileName||"STEP 模型"}</a>}
+        {!d?.model3dUrl&&extUrl.model3d&&<a href={extUrl.model3d} target="_blank" rel="noreferrer" style={DL_BTN}>⬇ KiCad官方 STEP</a>}
+        {extUrl.symbol&&<a href={extUrl.symbol} target="_blank" rel="noreferrer" style={DL_BTN}>🔗 官方符号库</a>}
+        {extUrl.footprint&&<a href={extUrl.footprint} target="_blank" rel="noreferrer" style={DL_BTN}>🔗 官方封装库</a>}
       </div>)}
 
     {zoomed&&zoomed!=="model3d"&&(
