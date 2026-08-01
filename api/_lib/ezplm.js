@@ -139,33 +139,59 @@ async function ezplmConfigured() {
 }
 
 /**
- * 按型号查询。**不做静默替换**：
- * 线上曾出现输入 TL431 却返回 TL431-1、输入 LM358ADR 却混入 ST/LM258/LM2904 资源。
- * 现在统一经 resolveIdentity 判定匹配类型，并把厂商与封装写进缓存键。
+ * 按型号查询。
+ *
+ * 两条纪律必须同时满足（v6.3.0 只做到前一条，导致基础型号查不到数据）：
+ *  1. 不静默替换：输入 TL431 不得悄悄变成 TL431-1
+ *  2. 不丢数据：输入 AD8331（基础型号）时，ezPLM 里的 AD8331ARQZ 等变体必须被找出来供用户确认
+ *
+ * 因此：exact 命中直接返回；否则返回同基础器件的变体集合并标 needsVariantConfirm，
+ * 由上层决定是让用户选、还是先用最佳变体的数据但明确标注。
  */
 async function queryLocalDB(partNumber, opts = {}) {
   const probe = `ez:probe:${String(partNumber).toLowerCase()}`;
   const cachedProbe = cache.get(probe);
-  if (cachedProbe !== null && cachedProbe !== undefined) return cachedProbe || null;
+  if (cachedProbe !== null && cachedProbe !== undefined) {
+    if (cachedProbe === false) return null;
+    if (cachedProbe.needsVariantConfirm && opts.exactOnly) return null;
+    return cachedProbe;
+  }
 
   if (await ezplmConfigured()) {
-    const r = await callEzplm("parts", { keyword: partNumber, pageSize: 20 });
+    // 用基础型号搜，覆盖面更广（输入 AD8331ARQ-REEL7 时也能找到同系列）
+    const base = splitMpn(partNumber).baseDevice;
+    const r = await callEzplm("parts", { keyword: base || partNumber, pageSize: 30 });
     if (r.ok && r.data.length) {
       const mapped = r.data.map(mapEzplmPart);
       const identity = resolveIdentity(partNumber, mapped, { sourceType: "ezplm" });
 
-      // 只有 exact / package_variant 才可当作"该型号的数据"；
-      // base_device / fuzzy 不得冒充，交由调用方让用户确认变体。
       if (identity.matchType === "exact" && identity.record?.parameters?.length) {
-        const out = { ...identity.record, identity, _matchType: identity.matchType };
+        const out = { ...identity.record, identity, _matchType: "exact" };
         cache.set(identityCacheKey("ez:part", identity), out, 7 * 86400);
         cache.set(probe, out, 7 * 86400);
         return out;
       }
-      // 无 exact：返回候选集合供上层做变体确认，绝不替换用户输入
-      const out = { ambiguous: true, identity, candidates: mapped.slice(0, 10) };
-      cache.set(probe, out, 3600);
-      return opts.allowAmbiguous ? out : null;
+
+      // 无 exact：找出同基础器件的变体，交给上层做确认，绝不改写用户输入
+      const nrm = x => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const wantBase = nrm(base);
+      const sameFamily = mapped.filter(m => nrm(splitMpn(m.partNumber).baseDevice) === wantBase);
+      const pool = sameFamily.length ? sameFamily : mapped;
+      if (pool.length) {
+        const best = pool.find(m => m.parameters?.length) || pool[0];
+        const out = {
+          ...best,
+          partNumber: best.partNumber,          // 保留真实变体号
+          requestedMpn: partNumber,             // 同时保留用户输入，UI 需同时展示
+          identity: { ...identity, matchType: sameFamily.length ? "package_variant" : "base_device" },
+          _matchType: sameFamily.length ? "package_variant" : "base_device",
+          needsVariantConfirm: true,
+          variants: pool.map(m => ({ pn: m.partNumber, package: m.footprint || "",
+            note: m.description || "", ezplmId: m.ezplmId })).slice(0, 12),
+        };
+        cache.set(probe, out, 86400);
+        return opts.exactOnly ? null : out;
+      }
     }
     cache.set(probe, false, 3600);
     return null;
@@ -218,7 +244,7 @@ async function getReferenceDesigns(ezplmId, pageSize = 10) {
 /** 器件详情（含参考设计与可下载资源） */
 async function queryPartDetail(partNumber) {
   const base = await queryLocalDB(partNumber);
-  if (!base || base.ambiguous) return null;
+  if (!base) return null;
   const identity = base.identity || resolveIdentity(partNumber, [base], { sourceType: "ezplm" });
 
   /** 展示前逐个校验资源确属该器件（拦 LM2904BAIPWR.pdf / LM258DT.pdf 这类异物） */

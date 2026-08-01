@@ -21,18 +21,28 @@ const P = (mpn, mfr, extra = {}) => ({
 });
 
 test("P0：exact MPN 不得被静默替换", async t => {
-  await t.test("TL431 库里只有 TL431-1 → 不返回、不改名", async () => {
+  await t.test("TL431 无 exact → 不改名，但必须给出变体供确认（不得丢数据）", async () => {
     const ez = loadEzplm([P("TL431-1", "Texas Instruments"), P("TL431ACDR", "Texas Instruments")]);
     const r = await ez.queryLocalDB("TL431");
-    assert.equal(r, null, "无 exact 匹配时不得返回替代型号");
+    assert.ok(r, "不得返回 null —— 那会导致 ezPLM 数据整体丢失");
+    assert.equal(r.needsVariantConfirm, true);
+    assert.notEqual(r._matchType, "exact");
+    assert.equal(r.requestedMpn, "TL431", "必须保留用户原始输入");
+    assert.ok(r.variants.length >= 2, "应列出同族变体");
   });
-  await t.test("允许歧义模式时返回候选集合但标 ambiguous", async () => {
+  await t.test("exactOnly 模式仍可要求严格匹配", async () => {
     const ez = loadEzplm([P("TL431-1", "TI"), P("TL431ACDR", "TI")]);
-    const r = await ez.queryLocalDB("TL431", { allowAmbiguous: true });
-    assert.equal(r.ambiguous, true);
-    assert.notEqual(r.identity.matchType, "exact");
-    assert.equal(r.identity.requestedMpn, "TL431");
-    assert.ok(r.candidates.length >= 2);
+    assert.equal(await ez.queryLocalDB("TL431", { exactOnly: true }), null);
+  });
+  await t.test("AD8331 基础型号 → 找出 ARQZ 等变体并带参数", async () => {
+    const ez = loadEzplm([P("AD8331ARQZ", "Analog Devices", { pkg: "QSOP-20" }),
+                          P("AD8331ARQ-REEL7", "Analog Devices", { pkg: "QSOP-20" })]);
+    const r = await ez.queryLocalDB("AD8331");
+    assert.ok(r, "基础型号查询不得返回 null");
+    assert.ok(r.parameters.length > 0, "必须带出 ezPLM 参数，而非降级到分销商");
+    assert.equal(r.needsVariantConfirm, true);
+    assert.equal(r._matchType, "package_variant");
+    assert.ok(r.variants.some(v => v.pn === "AD8331ARQZ"));
   });
   await t.test("LM358ADR 精确命中", async () => {
     const ez = loadEzplm([P("LM358ADR", "Texas Instruments"), P("LM358AD", "Texas Instruments")]);

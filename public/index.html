@@ -1857,6 +1857,12 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
           {original._dataPath==="local_db+ai"&&<span style={{padding:"2px 7px",borderRadius:4,background:C.amberBg,color:C.amber,fontSize:10,fontWeight:600,border:"1px solid #f0dca0"}}>+AI补充参数</span>}
           {original._dataPath==="ai_search"&&<span style={{padding:"2px 7px",borderRadius:4,background:C.amberBg,color:C.amber,fontSize:10,fontWeight:600,border:"1px solid #f0dca0"}}>🌐 AI搜索</span>}
         </div>
+        {original.needsVariantConfirm&&original.requestedMpn&&original.requestedMpn!==original.partNumber&&(
+          <div style={{marginTop:8,padding:"7px 10px",borderRadius:7,background:C.amberBg,border:"1px solid #f0dca0",fontSize:11,color:"#854f0b"}}>
+            ⚠ 你查询的是 <b style={{fontFamily:"'DM Mono',monospace"}}>{original.requestedMpn}</b>，
+            ezPLM 无该精确订货号；当前显示的是同系列变体 <b style={{fontFamily:"'DM Mono',monospace"}}>{original.partNumber}</b> 的数据。
+            请在下方确认具体封装/订货型号后再做决策。
+          </div>)}
         {original.manufacturer&&<div style={{fontSize:13,color:C.textMute,marginTop:5}}>{original.manufacturer}</div>}
         {original.description&&<div style={{fontSize:13,color:C.textSec,marginTop:3}}>{original.description}</div>}
         {(original.datasheetUrl||original.footprintFileUrl||original.model3dUrl||original.symbolUrl||original.productUrl)&&(
@@ -2123,7 +2129,7 @@ function App(){
       {page==="workbench"&&original&&<Workbench key={original.partNumber} original={original} demoNote={demoNote} onBack={()=>setPage("home")} onSwitchVariant={v=>analyze(v.pn)}/>}
     </main>
     <footer style={{textAlign:"center",padding:"14px",borderTop:`1px solid ${C.borderLight}`,fontSize:12,color:C.textMute,background:"#fff"}}>
-      AltPart Pro v6.3.0 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
+      AltPart Pro v6.3.1 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
     </footer>
   </React.Fragment>);
 }

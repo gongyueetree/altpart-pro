@@ -158,7 +158,15 @@ async function resolveOriginalPart(partNumber, onProgress) {
         .slice(0, 10);
     } catch (e) { console.warn("[Pipeline] 变体查询失败:", e.message); }
 
-    return { ...localData, parameters, variants, _dataPath: enriched ? "local_db+ai" : "local_db" };
+    return {
+      ...localData, parameters,
+      // ezPLM 直接给出的同族变体优先；否则用 searchParts 的结果
+      variants: (localData.variants?.length ? localData.variants : variants),
+      needsVariantConfirm: !!localData.needsVariantConfirm,
+      requestedMpn: localData.requestedMpn || partNumber,
+      _matchType: localData._matchType || "exact",
+      _dataPath: enriched ? "local_db+ai" : "local_db",
+    };
   }
 
   // 1b. 查缓存
