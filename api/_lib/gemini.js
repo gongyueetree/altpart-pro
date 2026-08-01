@@ -203,7 +203,9 @@ async function getCandidates(part, category, params, mfrs, mode, scenario, count
   const sys = `你是元器件替代料专家。基于真实存在的型号推荐候选（不要编造订货型号）。
 ${appHint ? appHint + "\n⚠ 候选必须满足该应用场景的关键约束，不满足的不要列入。" : ""}
 ${scenarioHint ? "替代目的：" + scenarioHint : ""}
-只返回 JSON：{"candidates":["型号1",...],"eliminated":[{"pn":"型号","reason":"原因"}]}
+只返回 JSON：{"candidates":[{"pn":"型号","functionCategory":"功能类别"},...],"eliminated":[{"pn":"型号","reason":"原因"}]}
+⚠ 候选必须与原型号**功能类别相同**。例如原型号是可变增益放大器(VGA)，
+   就不能推荐解调器/混频器/运放等其它类别的器件，哪怕它们型号相邻。
 candidates 给 ${count} 个真实型号（系统会再校验筛选，宁多勿缺）。eliminated 最多 3 个。
 ⚠ 严禁把原型号本身或其封装/温度变体（同一芯片不同后缀）列入 candidates —— 必须是不同的芯片型号。`;
 
@@ -224,11 +226,17 @@ async function lookupPartSpecs(partNumber, referenceParams) {
     `param_${i + 1}: ${p.name}（${p.nameEn || p.name}）${p.unit ? "，单位: " + p.unit : ""}`
   ).join("\n");
 
-  const sys = `你是元器件参数查询工具。联网搜索 "${partNumber} datasheet" / "${partNumber} specifications"。
+  const sys = `你是元器件参数查询工具，回答关于型号 "${partNumber}" 的信息。
 每个参数：知道→填该器件的真实值，不确定→填 "N/A"。
 ⚠ 严禁编造或猜测，宁可 N/A。每个器件的参数各不相同，必须基于该具体型号的datasheet知识作答。
+⚠ description 与 functionCategory 必须是 "${partNumber}" **本身**的真实功能，
+   严禁沿用相邻型号或提问中其它型号的描述。若不确定该型号的功能，functionCategory 填 "unknown"。
+functionCategory 用简短英文功能类别，例如：
+  operational-amplifier / variable-gain-amplifier / instrumentation-amplifier /
+  comparator / voltage-reference / ldo / dc-dc-converter / mcu / adc / dac /
+  demodulator / mixer / rf-amplifier / mosfet / logic-gate / interface / sensor
 只返回 JSON：
-{"partNumber":"${partNumber}","manufacturer":"","description":"",
+{"partNumber":"${partNumber}","manufacturer":"","description":"该型号真实功能的一句话描述","functionCategory":"",
 "params":{${referenceParams.map((_, i) => `"param_${i + 1}":{"value":"","unit":""}`).join(",")}}}
 必须返回全部 ${referenceParams.length} 个参数。`;
 

@@ -1167,7 +1167,10 @@ function ResultCard({rec,index,market,onShowDetail}){
           <span style={{padding:"2px 7px",borderRadius:4,background:C.bgSoft,color:C.textMute,fontSize:10,border:`1px solid ${C.borderLight}`}}>{rec.dataSource}</span>
         </div>
         <div style={{fontSize:13,color:C.textMute}}>{rec.manufacturer}</div>
-        {rec.description&&<div style={{fontSize:12,color:C.textMute,marginTop:2}}>{rec.description}</div>}
+        {rec.description&&<div style={{fontSize:12,color:C.textMute,marginTop:2}}>
+          {rec.description}
+          {rec.dataSource==="AI搜索"&&<span style={{marginLeft:6,fontSize:10,padding:"1px 5px",borderRadius:3,background:C.amberBg,color:C.amber,border:"1px solid #f0dca0"}}>描述来自AI，请核对</span>}
+        </div>}
       </div>
       <div style={{fontSize:16,color:C.textMute,transform:expanded?"rotate(180deg)":"rotate(0)",transition:"transform 0.2s"}}>▾</div>
     </div>
@@ -1428,6 +1431,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
       </div>)}
       {phase==="done"&&result&&(<div style={{animation:"fadeUp 0.4s ease both"}}>
         {result.recommendations.some(r=>r._lowConfidence)&&(<div style={{padding:"8px 14px",borderRadius:7,background:C.amberBg,border:"1px solid #f0dca0",color:"#854f0b",fontSize:12,marginBottom:12}}>⚠ 以下候选的证据可信度低于常规阈值（多为AI来源且资料不全），仅供参考方向，务必人工核对 datasheet 后再决策</div>)}
+        {(result.eliminated||[]).some(e=>/功能类别不符/.test(e.reason||""))&&(<div style={{padding:"8px 14px",borderRadius:7,background:C.greenLight,border:`1px solid ${C.greenMid}`,color:C.green,fontSize:12,marginBottom:12}}>✓ 已自动拦截 {(result.eliminated||[]).filter(e=>/功能类别不符/.test(e.reason||"")).length} 个功能类别不符的候选（见下方淘汰列表）</div>)}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
           <h3 style={{fontSize:16,fontWeight:700}}>推荐结果 <span style={{fontSize:13,color:C.textMute,fontWeight:400}}>· {result.recommendations.length} 个替代方案{result.basePrice!=null?` · 原型号 $${result.basePrice}`:""} · 点击型号查看采购详情</span></h3>
           <div style={{display:"flex",gap:6}}>

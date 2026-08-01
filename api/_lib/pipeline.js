@@ -9,6 +9,40 @@ const { cache } = require("./cache");
 
 // 淘汰阈值: 综合分低于此值的候选直接淘汰
 const ELIMINATION_THRESHOLD = 40;
+
+/** 功能类别归一化：中英文/别名 → 统一代码 */
+function normFunc(text) {
+  const t = String(text || "").toLowerCase();
+  if (!t) return "";
+  const M = [
+    ["vga", /variable[- ]?gain|可变增益|vga/],
+    ["opamp", /operational[- ]?amplifier|运算放大器|运放|op[- ]?amp/],
+    ["inamp", /instrumentation[- ]?amplifier|仪表放大器|仪用放大/],
+    ["demod", /demodulator|modulator|解调|调制|mixer|混频/],
+    ["rfamp", /rf[- ]?amplifier|lna|low[- ]?noise[- ]?amp|射频放大/],
+    ["comparator", /comparator|比较器/],
+    ["vref", /voltage[- ]?reference|基准电压|电压基准|shunt[- ]?regulator|并联稳压/],
+    ["ldo", /\bldo\b|linear[- ]?regulator|线性稳压/],
+    ["dcdc", /dc[- ]?dc|buck|boost|switching[- ]?regulator|降压|升压|开关稳压|开关电源/],
+    ["mcu", /microcontroller|\bmcu\b|单片机|微控制器/],
+    ["adc", /analog[- ]?to[- ]?digital|\badc\b|模数转换/],
+    ["dac", /digital[- ]?to[- ]?analog|\bdac\b|数模转换/],
+    ["mosfet", /mosfet|场效应|\bfet\b/],
+    ["logic", /logic[- ]?gate|逻辑门|shift[- ]?register|移位寄存/],
+    ["interface", /transceiver|interface|收发器|接口芯片/],
+    ["sensor", /sensor|传感器/],
+    ["memory", /eeprom|flash memory|\bsram\b|存储器/],
+  ];
+  for (const [code, re] of M) if (re.test(t)) return code;
+  return "";
+}
+
+/** 类别是否可互为替代（同类，或明确的近亲类别） */
+function funcCompatible(a, b) {
+  if (a === b) return true;
+  const KIN = [["opamp", "inamp"], ["ldo", "vref"]];   // 有限的近亲，需人工确认
+  return KIN.some(([x, y]) => (a === x && b === y) || (a === y && b === x));
+}
 // 参数少于此数时用 AI 补齐（否则评分缺乏依据）
 const MIN_PARAMS = 5;
 
@@ -127,22 +161,27 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   // ─── Step 2: AI 推荐 10 个候选 ───
   onProgress?.(`AI 正在搜索候选型号（目标 ${AI_CANDIDATE_COUNT} 个）...`);
   let candidatePNs = [], aiEliminated = [];
+  const candCategory = {};   // 型号 → AI 声明的功能类别
   const candCk = `cand10:${partNumber}:${mode}:${scenario || ""}:${application}`;
   const candCached = cache.get(candCk);
   if (candCached) {
-    candidatePNs = candCached.candidates;
+    candidatePNs = (candCached.candidates || []).map(c => (typeof c === "string" ? c : c?.pn)).filter(Boolean);
     aiEliminated = candCached.eliminated || [];
+    Object.assign(candCategory, candCached.categories || {});
   } else {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const aiResult = await getCandidates(original, original.category, params, preferredManufacturers, mode, scenario, AI_CANDIDATE_COUNT, getApplicationHint(application));
-        candidatePNs = (aiResult.candidates || []).slice(0, AI_CANDIDATE_COUNT);
+        const rawCands = (aiResult.candidates || []).slice(0, AI_CANDIDATE_COUNT);
+        candidatePNs = rawCands.map(c => (typeof c === "string" ? c : c?.pn)).filter(Boolean);
+        rawCands.forEach(c => { if (c && typeof c === "object" && c.pn && c.functionCategory)
+          candCategory[String(c.pn).toUpperCase()] = String(c.functionCategory).toLowerCase(); });
         aiEliminated = aiResult.eliminated || [];
         if (candidatePNs.length) break;
       } catch (e) { console.warn(`[Pipeline] Candidates attempt ${attempt + 1} failed:`, e.message); }
       if (attempt < 1) await new Promise(r => setTimeout(r, 800));
     }
-    if (candidatePNs.length) cache.set(candCk, { candidates: candidatePNs, eliminated: aiEliminated }, 86400);
+    if (candidatePNs.length) cache.set(candCk, { candidates: candidatePNs, eliminated: aiEliminated, categories: candCategory }, 86400);
   }
   // 双保险：程序化排除原型号本身及其封装/温度变体（同芯片不同后缀）
   const normPN = x => String(x).toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -216,6 +255,20 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
 
   if (!fetchResults.length) throw new Error("所有候选型号均无法获取参数");
 
+  // ─── Step 3.5: 功能类别一致性校验 ───
+  // 教训：AI 曾把 AD8333(I/Q解调器) 当作 AD603(可变增益放大器) 的替代，
+  // 且沿用了相邻型号的描述。功能类别不同的器件不可能是替代料，必须程序化拦截。
+  // 描述通常比 ezPLM 的宽泛品类更精确（如 AD603 品类写"运算放大器"，描述才点明"可变增益放大器"）
+  const inferCat = o => normFunc(o?.description || "") || normFunc(o?._functionCategory || "") || normFunc(o?.category || "");
+  const origCat = inferCat(original);
+  for (const cand of fetchResults) {
+    const candCat = inferCat(cand) || normFunc(candCategory[String(cand.partNumber).toUpperCase()] || "");
+    cand._funcCategory = candCat;
+    if (origCat && candCat && !funcCompatible(origCat, candCat)) {
+      cand._categoryMismatch = { orig: origCat, cand: candCat };
+    }
+  }
+
   // ─── Step 4: 算法评分 + 淘汰 + 排序 ───
   onProgress?.("正在计算匹配评分并筛选...");
   const { calculateScore } = require("./scoring-node");
@@ -229,6 +282,12 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   for (const cand of fetchResults) {
     const result = calculateScore(params, cand, order, constraints);
 
+    // 功能类别不符 → 直接淘汰（替代料的前提是同类器件）
+    if (cand._categoryMismatch) {
+      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer,
+        reason: `功能类别不符：原型号为「${cand._categoryMismatch.orig}」，该型号为「${cand._categoryMismatch.cand}」，不可作为替代` });
+      continue;
+    }
     // 硬约束淘汰
     if (result.eliminated) {
       eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: result.elimReason });
