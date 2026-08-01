@@ -618,27 +618,42 @@ function attachViewport(svg){
 // occt-import-js(OCCT WASM 内核) 解析 STEP → three.js 渲染
 // 手动触发：内核约 7.6MB + STEP 文件本身 1-3MB，不应随页面自动加载
 // ═══════════════════════════════════════════════════════════
-// 优先本站自发（/vendor/，由 npm run vendor 生成），不可用时回退 CDN
+// OCCT 是 UMD 构建（非 ESM），必须用 <script> 标签加载后调全局 occtimportjs()。
+// 用 import() 会被 esm.sh 注入 process 垫片，导致 Emscripten 误判为 Node 环境
+// 而去调 fs.readFileSync，报 "readFileSync is not a function"。
 const OCCT_LOCAL="/vendor/occt-import-js.js";
-const OCCT_CDN="https://esm.sh/occt-import-js@0.0.23";
+const OCCT_CDN="https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.js";
 const THREE_CDN="https://esm.sh/three@0.185.0";
 const ORBIT_CDN="https://esm.sh/three@0.185.0/examples/jsm/controls/OrbitControls.js";
 
-// 加载 OCCT 内核：本站优先 → CDN 兜底；wasm 路径与 js 同源
-async function loadOcct(dynImport,setMsg){
+function loadScriptOnce(src){
+  return new Promise((res,rej)=>{
+    const done=[...document.scripts].some(x=>x.src&&x.src.indexOf(src)>=0);
+    if(done&&window.occtimportjs)return res();
+    const el=document.createElement("script");
+    el.src=src;el.async=true;
+    el.onload=()=>res();
+    el.onerror=()=>rej(new Error(`脚本加载失败: ${src}`));
+    document.head.appendChild(el);
+  });
+}
+
+// 加载 OCCT 内核：本站 /vendor/ 优先 → CDN 兜底
+async function loadOcct(setMsg){
+  let base=null;
   try{
     const head=await fetch(OCCT_LOCAL,{method:"HEAD"});
-    if(head.ok){
-      setMsg?.("正在加载本站 3D 内核…");
-      const m=await dynImport(OCCT_LOCAL);
-      const f=m.default||m;
-      return await f({locateFile:file=>`/vendor/${file}`});
-    }
+    if(head.ok){setMsg?.("正在加载本站 3D 内核…");await loadScriptOnce(OCCT_LOCAL);base="/vendor/";}
   }catch(e){}
-  setMsg?.("本站内核不可用，回退 CDN…");
-  const m=await dynImport(OCCT_CDN);
-  const f=m.default||m;
-  return await f();
+  if(!base){
+    setMsg?.("本站内核不可用，回退 CDN…");
+    await loadScriptOnce(OCCT_CDN);
+    base="https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/";
+  }
+  if(typeof window.occtimportjs!=="function")throw new Error("OCCT 内核已加载但未暴露 occtimportjs()");
+  setMsg?.("正在初始化 OCCT 内核…");
+  // locateFile 指向与 js 同源的 wasm
+  return await window.occtimportjs({locateFile:f=>base+f});
 }
 
 function Step3DViewer({stepUrl,fileName}){
@@ -654,9 +669,10 @@ function Step3DViewer({stepUrl,fileName}){
     try{
       // ⚠ Babel standalone 会把静态写法的 import() 转译成 require()（浏览器无此函数）。
       // 用 new Function 构造，使动态 import 在运行时才出现，绕过编译期转换。
+      // three.js 是标准 ESM，用动态 import；OCCT 是 UMD，用 script 标签
       const dynImport=new Function("u","return import(u)");
       const [occt,THREE,orbitMod]=await Promise.all([
-        loadOcct(dynImport,setMsg),dynImport(THREE_CDN),dynImport(ORBIT_CDN),
+        loadOcct(setMsg),dynImport(THREE_CDN),dynImport(ORBIT_CDN),
       ]);
       const OrbitControls=orbitMod.OrbitControls;
 
