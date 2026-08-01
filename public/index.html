@@ -1027,6 +1027,25 @@ function GraphicsPanel({d,pn}){
     }
   },[zoomed,fpText,symText,ksym,pin,unit]);
 
+  const tryAiPinout=async()=>{
+    setAiBusy(true);
+    try{
+      const gp0=parsePackage(pkg);
+      const q=new URLSearchParams({pn,aiPinout:"1"});
+      if(pkg)q.set("footprint",pkg);
+      if(gp0?.pins)q.set("pins",String(gp0.pins));
+      const r=await fetch(`/api/v2/ecad?${q}`);
+      const e=await r.json().catch(()=>null);
+      if(e?.aiPinout?.pins?.length){
+        const sp=symbolFromPdfPins(pn,e.aiPinout.pins);
+        if(sp){setKSym(sp);setSrcSym("ai_pinout");setPdfWarn(e.aiPinout.warning||"");setAiTry(true);setAiBusy(false);return;}
+      }
+      setPdfWarn("AI 未能给出可信的引脚定义（引脚数不符或自评不确定），已保持仅编号符号");
+      setAiTry(true);
+    }catch(err){setPdfWarn("AI 引脚推断失败");}
+    setAiBusy(false);
+  };
+
   const SRC_BADGE={
     ezplm:{t:"✓ ezPLM 库文件",c:C.green,bg:C.greenLight,b:C.greenMid,tip:"来自 ezPLM 元器件库的原始 KiCad 文件"},
     kicad_official:{t:"✓ KiCad 官方库",c:C.green,bg:C.greenLight,b:C.greenMid,tip:"来自 KiCad 官方库 (gitlab.com/kicad/libraries)，符合 KLC 规范"},
