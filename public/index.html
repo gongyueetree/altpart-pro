@@ -15,6 +15,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-thumb{background:#c2e5d3;border-radius:3px}
 .drag-over{border-color:#1a6c4e!important;background:#e8f5ef!important}
 @media(max-width:900px){.workbench{grid-template-columns:1fr!important}}
+@media(max-width:1100px){.graphics-grid{grid-template-columns:1fr!important}}
 </style>
 </head>
 <body>
@@ -555,7 +556,7 @@ function renderKicadSymTo(sym,svg,onPinClick,selPin,unit=1){
 }
 
 // ── 3D 等轴测示意（ezPLM 提供 STEP，浏览器无法直接渲染）──
-function Model3DSVG({pkg,svgRef}){
+function Model3DSVG({pkg,svgRef,compact}){
   const g=parsePackage(pkg);
   if(!g)return <EmptyPreview text="无封装信息"/>;
   const W=760,H=480,cx=W/2,cy=H/2+20;
@@ -576,7 +577,7 @@ function Model3DSVG({pkg,svgRef}){
       leads.push(<rect key={`r${i}`} x={xr} y={ly-oy*0.15} width={14} height={5} fill="#c7ccd2" rx={1}/>);
     }
   }
-  return(<svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:340,background:"linear-gradient(160deg,#f7faf8,#eef3f0)",borderRadius:8,border:`1px solid ${C.borderLight}`}}>
+  return(<svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:compact?250:340,background:"linear-gradient(160deg,#f7faf8,#eef3f0)",borderRadius:8,border:`1px solid ${C.borderLight}`}}>
     <defs><linearGradient id="topg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stopColor="#4a6357"/><stop offset="100%" stopColor="#33463d"/></linearGradient></defs>
     {[...Array(9)].map((_,i)=>(<line key={`gx${i}`} x1={cx-260+i*65} y1={cy+40} x2={cx-200+i*65} y2={cy+8} stroke="#dde5e0" strokeWidth="1"/>))}
@@ -681,7 +682,7 @@ async function loadOcct(setMsg){
   return await window.occtimportjs({locateFile:f=>base+f});
 }
 
-function Step3DViewer({stepUrl,fileName}){
+function Step3DViewer({stepUrl,fileName,compact}){
   const[phase,setPhase]=useState("idle");   // idle|loading|ready|error
   const[msg,setMsg]=useState("");
   const[meshCount,setMeshCount]=useState(0);
@@ -759,20 +760,19 @@ function Step3DViewer({stepUrl,fileName}){
   }
 
   return(<div>
-    <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:10}}>
+    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:8,justifyContent:compact?"center":"flex-start"}}>
       {(phase==="idle"||phase==="error")&&(
-        <button onClick={load} style={{padding:"9px 18px",borderRadius:8,border:"none",background:C.green,color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer"}}>
-          {phase==="error"?"重试加载 3D 模型":"▶ 加载 3D 模型"}
+        <button onClick={load} style={{padding:compact?"7px 14px":"9px 18px",borderRadius:8,border:"none",background:C.green,color:"#fff",fontSize:compact?12:13,fontWeight:600,cursor:"pointer"}}>
+          {phase==="error"?"重试加载":"▶ 加载 3D 模型"}
         </button>)}
-      <a href={proxyRes(stepUrl)} target="_blank" rel="noreferrer" download
+      {!compact&&<a href={proxyRes(stepUrl)} target="_blank" rel="noreferrer" download
         style={{padding:"8px 14px",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.textSec,fontSize:12,textDecoration:"none"}}>
-        ⬇ 下载 STEP 源文件
-      </a>
-      <span style={{fontSize:11,color:C.textMute,flex:1,minWidth:200}}>
-        {fileName?`${fileName} · `:""}需下载约 7.6MB 的 3D 内核与 STEP 文件，故手动触发。
-      </span>
+        ⬇ 下载 STEP 源文件</a>}
+      {!compact&&<span style={{fontSize:11,color:C.textMute,flex:1,minWidth:200}}>
+        {fileName?`${fileName} · `:""}需下载约 7.6MB 的 3D 内核与 STEP 文件，故手动触发。</span>}
     </div>
-    {phase==="loading"&&<div style={{padding:"40px",textAlign:"center",color:C.textMute}}>
+    {compact&&phase==="idle"&&<div style={{fontSize:10,color:C.textMute,textAlign:"center",marginBottom:6}}>约 7.6MB 内核，按需加载</div>}
+    {phase==="loading"&&<div style={{padding:compact?"24px 8px":"40px",textAlign:"center",color:C.textMute}}>
       <div style={{width:28,height:28,border:`3px solid ${C.borderLight}`,borderTopColor:C.green,borderRadius:"50%",animation:"spin 0.8s linear infinite",margin:"0 auto 10px"}}/>
       <div style={{fontSize:12}}>{msg}</div></div>}
     {phase==="error"&&<div style={{padding:"12px 14px",borderRadius:8,background:"#fdeaea",border:"1px solid #f5c6c6",color:"#a0302a",fontSize:12}}>
@@ -780,160 +780,174 @@ function Step3DViewer({stepUrl,fileName}){
     {phase==="ready"&&<div style={{fontSize:11,color:C.textMute,marginBottom:6}}>
       已渲染 {meshCount} 个网格 · 左键旋转 / 滚轮缩放 / 右键平移</div>}
     <div ref={hostRef} style={{borderRadius:8,overflow:"hidden",
-      border:phase==="ready"?`1px solid ${C.borderLight}`:"none",minHeight:phase==="ready"?0:undefined}}/>
+      border:phase==="ready"?`1px solid ${C.borderLight}`:"none"}}/>
   </div>);
 }
 
-// ═══ 图形预览面板：符号 / 封装 / 3D（真实 KiCad 文件优先）═══
+// ═══ 图形预览面板：符号 / 封装 / 3D 三栏并排 ═══
 function GraphicsPanel({d,pn}){
-  const[g,setG]=useState("footprint");
-  const[fpText,setFpText]=useState(null);      // kicad_mod 文本
-  const[symText,setSymText]=useState(null);    // 符号 legacy 文本
+  const[fpText,setFpText]=useState(null);
+  const[symText,setSymText]=useState(null);
   const[fpReal,setFpReal]=useState(false);
   const[symReal,setSymReal]=useState(false);
   const[ksym,setKSym]=useState(null);
   const[kskip,setKSkip]=useState(0);
   const[unit,setUnit]=useState(1);
   const[loading,setLoading]=useState(true);
-  const[pin,setPin]=useState(null);            // 选中引脚（符号↔封装联动）
-  const fpRef=useRef(null),symRef=useRef(null),m3Ref=useRef(null);
+  const[pin,setPin]=useState(null);
+  const[zoomed,setZoomed]=useState(null);      // "symbol" | "footprint" | "model3d" | null
+  const fpRef=useRef(null),symRef=useRef(null);
+  const bigFpRef=useRef(null),bigSymRef=useRef(null);
   const pkg=d?.footprint||(d?.parameters||[]).find(p=>/封装|package/i.test(p.name))?.value;
 
-  // 拉取真实 KiCad 文件（经代理），失败则合成
   useEffect(()=>{
     let dead=false;
     (async()=>{
       setLoading(true);setPin(null);
-      // 封装
       let ft=null,real=false;
       if(d?.footprintFileUrl){
-        try{
-          const r=await fetch(proxyRes(d.footprintFileUrl));
+        try{const r=await fetch(proxyRes(d.footprintFileUrl));
           if(r.ok){const t=await r.text();if(t.includes("(pad")||t.includes("(fp_")){ft=t;real=true;}}
         }catch(e){}
       }
       if(!ft)ft=synthKicadMod(pkg);
-      if(dead)return;
-      setFpText(ft);setFpReal(real);
-      // 符号
-      let st=null,sreal=false,ksym=null,kskip=0;
+      let st=null,sreal=false,ks=null,kskp=0;
       if(d?.symbolUrl){
-        try{
-          const r=await fetch(proxyRes(d.symbolUrl));
+        try{const r=await fetch(proxyRes(d.symbolUrl));
           if(r.ok){
             const raw=await r.text();
             if(raw.includes("(kicad_symbol_lib")){
-              try{const ps=parseKicadSym(raw);ksym=ps;kskip=ps.skipped;sreal=true;}catch(e){}
+              try{const ps=parseKicadSym(raw);ks=ps;kskp=ps.skipped;sreal=true;}catch(e){}
             }
-            if(!ksym){
+            if(!ks){
               const conv=extractLegacySymbol(raw,pn)||modernSymbolToLegacy(raw,pn)||extractLegacySymbol(raw,d?.partNumber);
               if(conv){st=conv;sreal=true;}
             }
           }
         }catch(e){}
       }
-      if(!ksym&&!st){
+      if(!ks&&!st){
         const gp=parsePackage(pkg);
         const pinAttr=(d?.parameters||[]).find(x=>/引脚定义|pinout|pin\s*name/i.test(x.name));
         const names=pinAttr?String(pinAttr.value).split(/[,，;；]/).map(t=>t.trim()):null;
-        ksym=synthSymbol(pn,gp?.pins||8,names);   // 合成结构走同一渲染器
+        ks=synthSymbol(pn,gp?.pins||8,names);
       }
       if(dead)return;
-      setSymText(st);setSymReal(sreal);setKSym(ksym);setKSkip(kskip);setUnit(1);setLoading(false);
+      setFpText(ft);setFpReal(real);setSymText(st);setSymReal(sreal);
+      setKSym(ks);setKSkip(kskp);setUnit(1);setLoading(false);
     })();
     return()=>{dead=true};
   },[d,pn,pkg]);
 
-  // 渲染到 SVG
+  // 三栏小图渲染
   useEffect(()=>{
-    if(g==="footprint"&&fpRef.current&&fpText){renderFootprintToSvg(fpText,fpRef.current,setPin,pin);attachViewport(fpRef.current,true);}
-  },[g,fpText,pin]);
+    if(!loading&&fpRef.current&&fpText){renderFootprintToSvg(fpText,fpRef.current,setPin,pin);attachViewport(fpRef.current,true);}
+  },[loading,fpText,pin]);
   useEffect(()=>{
-    if(g!=="symbol"||!symRef.current)return;
-    if(ksym){renderKicadSymTo(ksym,symRef.current,setPin,pin,unit);}
-    else if(symText){renderSymbolToSvg(symText,symRef.current,1,setPin,pin);}
-    else return;
+    if(loading||!symRef.current)return;
+    if(ksym)renderKicadSymTo(ksym,symRef.current,setPin,pin,unit);
+    else if(symText)renderSymbolToSvg(symText,symRef.current,1,setPin,pin);
     attachViewport(symRef.current,true);
-  },[g,symText,ksym,pin,unit]);
+  },[loading,symText,ksym,pin,unit]);
+  // 放大视图渲染
   useEffect(()=>{
-    if(g==="model3d"&&m3Ref.current)attachViewport(m3Ref.current);
-  },[g]);
-  const vp=()=>g==="footprint"?fpRef.current?._vp:g==="symbol"?symRef.current?._vp:m3Ref.current?._vp;
+    if(zoomed==="footprint"&&bigFpRef.current&&fpText){renderFootprintToSvg(fpText,bigFpRef.current,setPin,pin);attachViewport(bigFpRef.current,true);}
+    if(zoomed==="symbol"&&bigSymRef.current){
+      if(ksym)renderKicadSymTo(ksym,bigSymRef.current,setPin,pin,unit);
+      else if(symText)renderSymbolToSvg(symText,bigSymRef.current,1,setPin,pin);
+      attachViewport(bigSymRef.current,true);
+    }
+  },[zoomed,fpText,symText,ksym,pin,unit]);
 
-  const dl=(d?.downloads||[]).find(f=>f.type===(g==="model3d"?"model3d":g));
-  const srcTag=(real,realLabel)=>(real
-    ?<span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:C.greenLight,color:C.green,border:`1px solid ${C.greenMid}`}}>
-       ✓ {realLabel} · 由本系统解析绘制，字体与隐藏属性等细节可能与 KiCad 显示存在差异，以源文件为准</span>
-    :<span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:C.amberBg,color:C.amber,border:"1px solid #f0dca0"}}>
-       ⚠ 示意渲染 · ezPLM 未提供该资源，此图依封装名推算生成，非精确制造数据</span>);
+  const symOK=symReal&&!ksym?._synth;
+  const badge=(ok,label)=>(
+    <span title={ok?"由本系统解析绘制，字体与隐藏属性等细节可能与 KiCad 显示存在差异，以源文件为准"
+                  :"ezPLM 未提供该资源，此图依封装名推算生成，非精确制造数据"}
+      style={{fontSize:10,padding:"2px 7px",borderRadius:4,whiteSpace:"nowrap",
+        background:ok?C.greenLight:C.amberBg,color:ok?C.green:C.amber,
+        border:`1px solid ${ok?C.greenMid:"#f0dca0"}`}}>{ok?`✓ ${label}`:"⚠ 示意渲染"}</span>);
+
+  const card=(title,extra,body,foot,onZoom)=>(
+    <div style={{border:`1px solid ${C.border}`,borderRadius:12,background:"#fff",padding:"12px 12px 10px",
+      display:"flex",flexDirection:"column",minWidth:0}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:8}}>
+        <span style={{fontSize:14,fontWeight:700,color:C.text}}>{title}</span>
+        {extra}
+      </div>
+      <div style={{flex:1,minHeight:240,display:"flex",alignItems:"center",justifyContent:"center"}}>{body}</div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginTop:8,minHeight:22}}>
+        <span style={{fontSize:10,color:C.textMute}}>{foot}</span>
+        {onZoom&&<button onClick={onZoom} style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${C.border}`,
+          background:"#fff",color:C.textSec,fontSize:11,cursor:"pointer",whiteSpace:"nowrap"}}>⛶ 放大</button>}
+      </div>
+    </div>);
+
+  if(loading)return(<div style={{padding:"60px",textAlign:"center",color:C.textMute}}>
+    <div style={{width:28,height:28,border:`3px solid ${C.borderLight}`,borderTopColor:C.green,borderRadius:"50%",animation:"spin 0.8s linear infinite",margin:"0 auto 10px"}}/>
+    正在加载 KiCad 库文件…</div>);
 
   return(<div>
-    <div style={{display:"flex",gap:6,marginBottom:12,justifyContent:"center"}}>
-      {[["symbol","🔣 原理图符号"],["footprint","📐 PCB 封装"],["model3d","🧊 3D 模型"]].map(([k,l])=>(
-        <button key={k} onClick={()=>setG(k)}
-          style={{padding:"7px 16px",borderRadius:7,borderWidth:1.5,borderStyle:"solid",
-            borderColor:g===k?C.green:C.border,background:g===k?C.greenLight:"#fff",
-            color:g===k?C.green:C.textSec,fontSize:13,fontWeight:g===k?600:400,cursor:"pointer"}}>{l}</button>))}
+    <div className="graphics-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:14}}>
+
+      {card("🔣 原理图符号",
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          {ksym?.maxUnit>1&&(
+            <select value={unit} onChange={e=>setUnit(Number(e.target.value))}
+              style={{padding:"3px 6px",borderRadius:5,border:`1px solid ${C.border}`,fontSize:11,background:"#fff",cursor:"pointer",maxWidth:130}}>
+              {Array.from({length:ksym.maxUnit},(_,i)=>i+1).map(u=>(
+                <option key={u} value={u}>{ksym.unitLabels?.[u]||`单元 ${u}`}</option>))}
+            </select>)}
+          {badge(symOK,"真实 .kicad_sym")}
+        </div>,
+        <svg ref={symRef} viewBox="0 0 800 520" style={{width:"100%",height:250,background:"#fffdf5",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>,
+        kskip>0?`⚠ ${kskip} 个图元未渲染`:"滚轮缩放 · 拖拽平移",
+        ()=>setZoomed("symbol"))}
+
+      {card("📐 PCB 封装",badge(fpReal,"真实 .kicad_mod"),
+        <svg ref={fpRef} viewBox="0 0 800 520" style={{width:"100%",height:250,background:"#fff",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>,
+        "滚轮缩放 · 拖拽平移",
+        ()=>setZoomed("footprint"))}
+
+      {card("🧊 3D 模型",
+        d?.model3dUrl?<span style={{fontSize:10,padding:"2px 7px",borderRadius:4,background:C.greenLight,color:C.green,border:`1px solid ${C.greenMid}`}}>✓ 真实 STEP</span>
+                     :badge(false,""),
+        d?.model3dUrl
+          ?<div style={{width:"100%"}}><Step3DViewer stepUrl={d.model3dUrl} fileName={d.model3dFileName} compact/></div>
+          :<Model3DSVG pkg={pkg} compact/>,
+        d?.model3dUrl?"点「加载 3D 模型」后可旋转":"ezPLM 未提供 STEP",
+        null)}
     </div>
 
-    {loading&&<div style={{padding:"50px",textAlign:"center",color:C.textMute}}>
-      <div style={{width:28,height:28,border:`3px solid ${C.borderLight}`,borderTopColor:C.green,borderRadius:"50%",animation:"spin 0.8s linear infinite",margin:"0 auto 10px"}}/>
-      正在加载 KiCad 库文件…</div>}
+    <div style={{textAlign:"center",fontSize:11,color:C.textMute,marginTop:10}}>
+      💡 点击符号引脚或封装焊盘可高亮对应位置{pin!=null?` · 当前选中 Pin ${pin}`:""}
+      {pin!=null&&<button onClick={()=>setPin(null)} style={{marginLeft:8,padding:"1px 8px",borderRadius:4,border:`1px solid ${C.border}`,background:"#fff",fontSize:11,cursor:"pointer"}}>清除</button>}
+    </div>
 
-    {!loading&&(<div>
-      {g==="symbol"&&ksym?.maxUnit>1&&(
-        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginBottom:8}}>
-          <span style={{fontSize:12,color:C.textSec}}>符号单元</span>
-          <select value={unit} onChange={e=>setUnit(Number(e.target.value))}
-            style={{padding:"5px 10px",borderRadius:6,border:`1px solid ${C.border}`,fontSize:12,background:"#fff",color:C.text,cursor:"pointer"}}>
-            {Array.from({length:ksym.maxUnit},(_,i)=>i+1).map(u=>(
-              <option key={u} value={u}>{ksym.unitLabels?.[u]||`单元 ${u}`}</option>))}
-          </select>
-          <span style={{fontSize:11,color:C.textMute}}>该器件含 {ksym.maxUnit} 个单元</span>
-        </div>)}
-      <div style={{textAlign:"center",marginBottom:8}}>
-        {g==="footprint"&&srcTag(fpReal,"真实 KiCad 封装文件")}
-        {g==="symbol"&&srcTag(symReal&&!ksym?._synth,"真实 KiCad 符号文件 (.kicad_sym)")}
-        {g==="model3d"&&!d?.model3dUrl&&srcTag(false,"")}
-      </div>
-
-      <div style={{position:"relative"}}>
-        <div style={{position:"absolute",right:10,top:10,zIndex:5,display:(g==="model3d"&&d?.model3dUrl)?"none":"flex",gap:5}}>
-          <button onClick={()=>vp()?.zoomIn()} title="放大" style={VP_BTN}>＋</button>
-          <button onClick={()=>vp()?.zoomOut()} title="缩小" style={VP_BTN}>－</button>
-          <button onClick={()=>vp()?.reset()} title="复位" style={{...VP_BTN,width:"auto",padding:"0 10px",fontSize:11}}>复位</button>
-        </div>
-        {g==="footprint"&&<svg ref={fpRef} viewBox="0 0 800 520" style={{width:"100%",height:340,background:"#fff",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>}
-        {g==="symbol"&&<svg ref={symRef} viewBox="0 0 800 520" style={{width:"100%",height:340,background:"#fffdf5",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>}
-        {g==="model3d"&&(d?.model3dUrl
-          ?<Step3DViewer stepUrl={d.model3dUrl} fileName={d.model3dFileName}/>
-          :<Model3DSVG pkg={pkg} svgRef={m3Ref}/>)}
-        {!(g==="model3d"&&d?.model3dUrl)&&<div style={{position:"absolute",left:12,bottom:10,fontSize:10,color:C.textMute,background:"rgba(255,255,255,.85)",padding:"3px 7px",borderRadius:4,pointerEvents:"none"}}>
-          滚轮缩放 · 拖拽平移 · 双击复位</div>}
-      </div>
-
-      {g==="symbol"&&kskip>0&&<div style={{textAlign:"center",fontSize:11,color:C.amber,marginTop:6}}>
-        ⚠ 有 {kskip} 个图元未能识别而未渲染，符号可能不完整</div>}
-      {(g==="footprint"||g==="symbol")&&<div style={{textAlign:"center",fontSize:11,color:C.textMute,marginTop:6}}>
-        💡 点击引脚或焊盘可高亮对应位置{pin!=null?` · 当前选中 Pin ${pin}`:""}
-        {pin!=null&&<button onClick={()=>setPin(null)} style={{marginLeft:8,padding:"1px 8px",borderRadius:4,border:`1px solid ${C.border}`,background:"#fff",fontSize:11,cursor:"pointer"}}>清除</button>}
-      </div>}
-
-      {g==="model3d"&&d?.model3dUrl&&<div style={{textAlign:"center",fontSize:11,color:C.textMute,marginTop:6}}>
-        ezPLM 提供 STEP 格式模型（浏览器无法直接渲染），可下载后用 KiCad/FreeCAD 打开
-      </div>}
-
-      {(dl||d?.footprintFileUrl||d?.model3dUrl)&&(<div style={{display:"flex",justifyContent:"center",marginTop:12}}>
-        <a href={proxyRes(dl?.url||(g==="footprint"?d?.footprintFileUrl:g==="model3d"?d?.model3dUrl:d?.symbolUrl))}
-          target="_blank" rel="noreferrer" download
-          style={{padding:"9px 20px",borderRadius:8,background:C.green,color:"#fff",fontSize:13,fontWeight:600,textDecoration:"none",
-            display:(g==="footprint"&&d?.footprintFileUrl)||(g==="model3d"&&d?.model3dUrl)||(g==="symbol"&&d?.symbolUrl)?"inline-block":"none"}}>
-          ⬇ 下载 {dl?.fname||(g==="symbol"?"符号文件":g==="footprint"?"KiCad 封装":"STEP 模型")}
-        </a>
+    {(d?.symbolUrl||d?.footprintFileUrl||d?.model3dUrl)&&(
+      <div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap",marginTop:12}}>
+        {d?.symbolUrl&&<a href={proxyRes(d.symbolUrl)} target="_blank" rel="noreferrer" download style={DL_BTN}>⬇ 符号文件</a>}
+        {d?.footprintFileUrl&&<a href={proxyRes(d.footprintFileUrl)} target="_blank" rel="noreferrer" download style={DL_BTN}>⬇ {d.footprintFileName||"KiCad 封装"}</a>}
+        {d?.model3dUrl&&<a href={proxyRes(d.model3dUrl)} target="_blank" rel="noreferrer" download style={DL_BTN}>⬇ {d.model3dFileName||"STEP 模型"}</a>}
       </div>)}
-    </div>)}
+
+    {zoomed&&zoomed!=="model3d"&&(
+      <div onClick={()=>setZoomed(null)} style={{position:"fixed",inset:0,background:"rgba(26,46,35,.5)",zIndex:1100,
+        display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+        <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:14,padding:16,width:"min(1000px,95vw)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <span style={{fontSize:15,fontWeight:700}}>{zoomed==="symbol"?"🔣 原理图符号":"📐 PCB 封装"} · {pn}</span>
+            <button onClick={()=>setZoomed(null)} style={{width:30,height:30,borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",cursor:"pointer"}}>✕</button>
+          </div>
+          {zoomed==="symbol"
+            ?<svg ref={bigSymRef} viewBox="0 0 800 520" style={{width:"100%",height:"65vh",background:"#fffdf5",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>
+            :<svg ref={bigFpRef} viewBox="0 0 800 520" style={{width:"100%",height:"65vh",background:"#fff",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>}
+          <div style={{textAlign:"center",fontSize:11,color:C.textMute,marginTop:8}}>滚轮缩放 · 拖拽平移 · 双击复位</div>
+        </div>
+      </div>)}
   </div>);
 }
+
+const DL_BTN={padding:"7px 14px",borderRadius:7,border:"1px solid #d4e8dc",background:"#fff",color:"#1a6c4e",fontSize:12,fontWeight:600,textDecoration:"none",whiteSpace:"nowrap"};
 
 // ═══ 器件详情弹窗（ezPLM 参数 / 实时行情 / 可下载资源 / 参考设计）═══
 function PartDetailModal({pn,rec,onClose}){
@@ -955,7 +969,7 @@ function PartDetailModal({pn,rec,onClose}){
   const refs=d?.referenceDesigns||[];
 
   return(<div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(26,46,35,0.45)",zIndex:1000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"32px 20px",overflowY:"auto",animation:"fadeUp 0.2s ease both"}}>
-    <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:14,maxWidth:920,width:"100%",boxShadow:"0 24px 64px rgba(0,0,0,0.25)"}}>
+    <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:14,maxWidth:1180,width:"100%",boxShadow:"0 24px 64px rgba(0,0,0,0.25)"}}>
 
       <div style={{padding:"18px 24px",borderBottom:`1px solid ${C.borderLight}`,display:"flex",alignItems:"flex-start",gap:14}}>
         <div style={{flex:1}}>
