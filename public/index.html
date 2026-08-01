@@ -360,26 +360,28 @@ function extractLegacySymbol(lib,name){
   const esc=String(name).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
   return lib.match(new RegExp(`DEF\\s+${esc}\\s+[\\s\\S]*?ENDDEF`))?.[0]||"";
 }
-// 无符号文件时按引脚数生成通用符号（尺寸随引脚数自适应，避免拥挤）
-function genericSymbol(partNumber,pinCount,pinNames){
+// 无符号文件时合成符号（输出与 parseKicadSym 相同的结构，走同一渲染器，样式一致）
+// 单位 mm，遵循 KiCad 惯例：2.54mm 引脚间距、引脚长 2.54mm、体宽随引脚名长度自适应
+function synthSymbol(partNumber,pinCount,pinNames){
   const count=Math.max(2,pinCount||8);
   const left=Math.ceil(count/2),right=count-left;
   const rows=Math.max(left,right);
-  const pitch=100;                                  // 每引脚间距（KiCad 内部单位）
-  const halfH=Math.max(200,(rows-1)*pitch/2+120);   // body 高度随引脚数增长
-  const halfW=Math.max(220,Math.min(520,count*8));  // body 宽度
-  const stub=180;                                   // 引脚长度
-  const L=[`DEF PART U 0 5 Y Y 1 F N`,"DRAW",`S ${-halfW} ${halfH} ${halfW} ${-halfH} 0 1 10 F`];
-  const nm=i=>{const v=pinNames&&pinNames[i];return (v&&String(v).trim())?String(v).trim().replace(/\s+/g,"_"):"~";};
+  const pitch=2.54, len=2.54;
+  const halfH=Math.max(5.08,(rows-1)*pitch/2+2.54);
+  const maxName=Math.max(4,...(pinNames||[]).map(x=>String(x||"").length));
+  const halfW=Math.max(6.35,Math.min(25.4,maxName*1.3+3.81));
+  const shapes=[{kind:"rect",x1:-halfW,y1:halfH,x2:halfW,y2:-halfH,filled:true}];
+  const pins=[];
+  const nm=i=>{const v=pinNames&&pinNames[i];return (v&&String(v).trim())?String(v).trim():"~";};
   for(let i=0;i<left;i++){
-    const y=Math.round(left===1?0:(rows-1)*pitch/2-i*pitch);
-    L.push(`X ${nm(i)} ${i+1} ${-halfW-stub} ${y} ${stub} R 50 50 1 1 P`);
+    const y=left===1?0:(rows-1)*pitch/2-i*pitch;
+    pins.push({x:-halfW-len,y,angle:0,length:len,name:nm(i),number:String(i+1)});   // angle 0 = 向右指入体
   }
   for(let i=0;i<right;i++){
-    const y=Math.round(right===1?0:-(rows-1)*pitch/2+i*pitch);
-    L.push(`X ${nm(left+i)} ${left+i+1} ${halfW+stub} ${y} ${stub} L 50 50 1 1 P`);
+    const y=right===1?0:-(rows-1)*pitch/2+i*pitch;
+    pins.push({x:halfW+len,y,angle:180,length:len,name:nm(left+i),number:String(left+i+1)});
   }
-  L.push("ENDDRAW","ENDDEF");return L.join("\n");
+  return {name:partNumber||"PART",shapes,pins,skipped:0,_synth:true};
 }
 // ── 符号渲染 ──
 function renderSymbolToSvg(txt,svg,unit,onPinClick,selectedPin){
@@ -616,9 +618,28 @@ function attachViewport(svg){
 // occt-import-js(OCCT WASM 内核) 解析 STEP → three.js 渲染
 // 手动触发：内核约 7.6MB + STEP 文件本身 1-3MB，不应随页面自动加载
 // ═══════════════════════════════════════════════════════════
+// 优先本站自发（/vendor/，由 npm run vendor 生成），不可用时回退 CDN
+const OCCT_LOCAL="/vendor/occt-import-js.js";
 const OCCT_CDN="https://esm.sh/occt-import-js@0.0.23";
 const THREE_CDN="https://esm.sh/three@0.185.0";
 const ORBIT_CDN="https://esm.sh/three@0.185.0/examples/jsm/controls/OrbitControls.js";
+
+// 加载 OCCT 内核：本站优先 → CDN 兜底；wasm 路径与 js 同源
+async function loadOcct(dynImport,setMsg){
+  try{
+    const head=await fetch(OCCT_LOCAL,{method:"HEAD"});
+    if(head.ok){
+      setMsg?.("正在加载本站 3D 内核…");
+      const m=await dynImport(OCCT_LOCAL);
+      const f=m.default||m;
+      return await f({locateFile:file=>`/vendor/${file}`});
+    }
+  }catch(e){}
+  setMsg?.("本站内核不可用，回退 CDN…");
+  const m=await dynImport(OCCT_CDN);
+  const f=m.default||m;
+  return await f();
+}
 
 function Step3DViewer({stepUrl,fileName}){
   const[phase,setPhase]=useState("idle");   // idle|loading|ready|error
@@ -631,15 +652,13 @@ function Step3DViewer({stepUrl,fileName}){
   async function load(){
     setPhase("loading");setMsg("正在加载 3D 内核与 STEP 模型…");
     try{
-      const [occtMod,THREE,orbitMod]=await Promise.all([
-        import(/* webpackIgnore: true */ OCCT_CDN),
-        import(/* webpackIgnore: true */ THREE_CDN),
-        import(/* webpackIgnore: true */ ORBIT_CDN),
+      // ⚠ Babel standalone 会把静态写法的 import() 转译成 require()（浏览器无此函数）。
+      // 用 new Function 构造，使动态 import 在运行时才出现，绕过编译期转换。
+      const dynImport=new Function("u","return import(u)");
+      const [occt,THREE,orbitMod]=await Promise.all([
+        loadOcct(dynImport,setMsg),dynImport(THREE_CDN),dynImport(ORBIT_CDN),
       ]);
-      const occtFactory=occtMod.default||occtMod;
       const OrbitControls=orbitMod.OrbitControls;
-      setMsg("正在初始化 OCCT 内核…");
-      const occt=await occtFactory();
 
       setMsg("正在下载 STEP 文件…");
       const res=await fetch(proxyRes(stepUrl));
@@ -771,12 +790,11 @@ function GraphicsPanel({d,pn}){
           }
         }catch(e){}
       }
-      if(!st){
+      if(!ksym&&!st){
         const gp=parsePackage(pkg);
-        // 若 ezPLM 参数里带引脚定义则用之，否则留空
         const pinAttr=(d?.parameters||[]).find(x=>/引脚定义|pinout|pin\s*name/i.test(x.name));
         const names=pinAttr?String(pinAttr.value).split(/[,，;；]/).map(t=>t.trim()):null;
-        st=genericSymbol(pn,gp?.pins||8,names);
+        ksym=synthSymbol(pn,gp?.pins||8,names);   // 合成结构走同一渲染器
       }
       if(dead)return;
       setSymText(st);setSymReal(sreal);setKSym(ksym);setKSkip(kskip);setLoading(false);
@@ -792,6 +810,7 @@ function GraphicsPanel({d,pn}){
     if(g!=="symbol"||!symRef.current)return;
     if(ksym){renderKicadSymTo(ksym,symRef.current,setPin,pin);}
     else if(symText){renderSymbolToSvg(symText,symRef.current,1,setPin,pin);}
+    else return;
     attachViewport(symRef.current);
   },[g,symText,ksym,pin]);
   useEffect(()=>{
@@ -822,7 +841,7 @@ function GraphicsPanel({d,pn}){
     {!loading&&(<div>
       <div style={{textAlign:"center",marginBottom:8}}>
         {g==="footprint"&&srcTag(fpReal,"真实 KiCad 封装文件")}
-        {g==="symbol"&&srcTag(symReal,"真实 KiCad 符号文件")}
+        {g==="symbol"&&srcTag(symReal&&!ksym?._synth,"真实 KiCad 符号文件 (.kicad_sym)")}
         {g==="model3d"&&!d?.model3dUrl&&srcTag(false,"")}
       </div>
 

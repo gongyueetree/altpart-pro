@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "vercel dev",
-    "deploy": "vercel --prod"
+    "deploy": "vercel --prod",
+    "vendor": "node scripts/vendor-occt.mjs"
   }
 }

@@ -81,9 +81,12 @@ function mapEzplmPart(raw) {
 
   const fpObj = raw.footprint && typeof raw.footprint === "object" ? raw.footprint : null;
   const footprint = objName(raw.footprint);
-  const kicadMod = fileOf(fpObj?.kicadModFile);
-  const stepFile = fileOf(fpObj?.stepFile);
-  const symbolFile = fileOf(raw.symbol);           // 目前官方多为 null
+  const kicadMod = fileOf(fpObj?.kicadModFile) ?? fileOf(raw.kicadModFile) ?? fileOf(fpObj?.modFile);
+  const stepFile = fileOf(fpObj?.stepFile) ?? fileOf(raw.stepFile) ?? fileOf(fpObj?.wrlFile) ?? fileOf(raw.wrlFile);
+  // 符号文件真实位置：symbol.kicadSymFile.url（此前只找顶层 url 导致漏读）
+  const symObj = raw.symbol && typeof raw.symbol === "object" ? raw.symbol : null;
+  const symbolFile = fileOf(symObj?.kicadSymFile) ?? fileOf(raw.kicadSymFile)
+                  ?? fileOf(symObj?.file) ?? fileOf(raw.symbolFile) ?? fileOf(raw.symbol);
   const pdfFile = fileOf(raw.pdf) ?? fileOf(raw.datasheet);
 
   // attributes: [{name,value}] → 标准 parameters
@@ -116,6 +119,7 @@ function mapEzplmPart(raw) {
     datasheetUrl: pdfFile?.url,
     productUrl: str(raw.officialUrl),
     symbolUrl: symbolFile?.url || null,
+    symbolFileName: symbolFile?.fname || "",
     footprintFileUrl: kicadMod?.url || null,
     footprintFileName: kicadMod?.fname || "",
     model3dUrl: stepFile?.url || null,
