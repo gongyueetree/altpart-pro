@@ -32,6 +32,9 @@ ${pkg ? `封装：${pkg}` : ""}${pinCount ? `，共 ${pinCount} 个引脚` : ""}
    不是"我不知道"。只有 datasheet 确实标 NC 的引脚才可填 NC；
    若多数引脚你都不确定，整体返回空数组，不要逐个填 NC 凑数。
 ⚠ 引脚名用 datasheet 中的正式缩写（如 VCC / GND / OUT / IN+ / EP），不要用中文或自造名。
+⚠ 反例警示：曾有模型把 AD8331(20-QSOP，真实引脚为 LMD/INH/VPSL/LON/LOP/COML/VIP/VIN/
+   MODE/GAIN/VCM/RCLMP/HILO/VPOS/VOH/VOL/COMM/ENBV/ENBL) 编造成
+   INL+/INL-/VNEG/VREF/OUT 加一堆 NC。若你对该型号的引脚没有确切记忆，直接返回空数组。
 
 type 取值：input / output / bidirectional / power / passive / no_connect
 只返回 JSON：
@@ -84,8 +87,11 @@ ${pinCount ? `pins 数组应有 ${pinCount} 项，编号 1..${pinCount}（含 EP
 
   // 引脚数与封装标称不符时如实告警，不静默采用
   let warning = "";
-  if (pinCount && Math.abs(pins.length - pinCount) > 1) {
-    warning = `AI 返回 ${pins.length} 个引脚，与封装标称 ${pinCount} 个不符`;
+  if (pinCount && pins.length !== pinCount) {
+    // 引脚数都对不上，名称更不可信 → 直接拒绝
+    console.warn(`[pinout] ${partNumber}: AI 返回 ${pins.length} 个引脚，封装标称 ${pinCount} 个，拒绝采用`);
+    cache.set(ck, false, 3600);
+    return null;
   }
   if (ncCount > 0) {
     warning = (warning ? warning + "；" : "") + `含 ${ncCount} 个 NC 引脚，请与 datasheet 核对是否确为空脚`;

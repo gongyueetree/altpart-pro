@@ -925,7 +925,9 @@ function GraphicsPanel({d,pn}){
   const[srcSym,setSrcSym]=useState("");        // ezplm | kicad_official | pdf_datasheet | standard | synth
   const[srcFp,setSrcFp]=useState("");          // ezplm | kicad_official | synth
   const[pdfWarn,setPdfWarn]=useState("");
-  const[extUrl,setExtUrl]=useState({});        // 官方库来源链接
+  const[extUrl,setExtUrl]=useState({});
+  const[aiTry,setAiTry]=useState(false);       // 用户是否已选择尝试 AI 推断引脚
+  const[aiBusy,setAiBusy]=useState(false);
   const fpRef=useRef(null),symRef=useRef(null);
   const bigFpRef=useRef(null),bigSymRef=useRef(null);
   const pkg=d?.footprint||(d?.parameters||[]).find(p=>/封装|package/i.test(p.name))?.value;
@@ -978,10 +980,7 @@ function GraphicsPanel({d,pn}){
               const sp=symbolFromPdfPins(pn,e.pdfPins.pins);
               if(sp){ks=sp;sSrc="pdf_datasheet";warn=e.pdfPins.warning||"";}
             }
-            if(!ks&&!st&&e.aiPinout?.pins?.length){
-              const sp=symbolFromPdfPins(pn,e.aiPinout.pins);
-              if(sp){ks=sp;sSrc="ai_pinout";warn=e.aiPinout.warning||"";}
-            }
+
             if(!real&&e.footprint?.text){ft=e.footprint.text;real=true;fSrc="kicad_official";ext.footprint=e.footprint.url;}
             if(e.model3d?.url)ext.model3d=e.model3d.url;
           }
@@ -1077,7 +1076,19 @@ function GraphicsPanel({d,pn}){
             </select>)}
           {srcBadge(srcSym)}
         </div>,
-        <svg ref={symRef} viewBox="0 0 800 520" style={{width:"100%",height:250,background:"#fffdf5",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>,
+        <div style={{width:"100%"}}>
+          <svg ref={symRef} viewBox="0 0 800 520" style={{width:"100%",height:250,background:"#fffdf5",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>
+          {srcSym==="synth"&&!aiTry&&(
+            <div style={{textAlign:"center",marginTop:8}}>
+              <button onClick={tryAiPinout} disabled={aiBusy}
+                style={{padding:"6px 14px",borderRadius:7,border:`1px solid ${C.amber}60`,background:C.amberBg,color:C.amber,fontSize:11,cursor:aiBusy?"wait":"pointer"}}>
+                {aiBusy?"推断中…":"⚠ 尝试用 AI 推断引脚名（不可靠，需核对 datasheet）"}
+              </button>
+              <div style={{fontSize:10,color:C.textMute,marginTop:4}}>
+                各权威来源均无此器件符号。AI 推断的引脚名曾出现整份编造的情况，仅供参考方向。
+              </div>
+            </div>)}
+        </div>,
         pdfWarn?`⚠ ${pdfWarn}`:kskip>0?`⚠ ${kskip} 个图元未渲染`:"滚轮缩放 · 拖拽平移",
         ()=>setZoomed("symbol"))}
 

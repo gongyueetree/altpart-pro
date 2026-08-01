@@ -98,6 +98,41 @@ function parsePinLines(page) {
   return out;
 }
 
+/**
+ * 解析"引脚配置图"文字（ADI/TI 常见版式）
+ * 例：AD8331 图 3 的文字层为  "LMD 1 20 COMM"  "INH 2 19 ENBL" …
+ * 左名 左号 右号 右名，一行同时给出两个引脚。
+ */
+function parsePinConfigFigure(page) {
+  const out = [];
+  for (const line of page.lines) {
+    const t = line.text;
+    if (t.length > 80) continue;
+    // 左名 左号 右号 右名
+    let m = t.match(/^([A-Z][A-Z0-9_+\-/.]{1,9})\s+(\d{1,3})\s+(\d{1,3})\s+([A-Z][A-Z0-9_+\-/.]{1,9})$/);
+    if (m) {
+      const [, ln, lnum, rnum, rn] = m;
+      out.push({ number: lnum, name: ln, type: classifyType("", ln), description: "" });
+      out.push({ number: rnum, name: rn, type: classifyType("", rn), description: "" });
+      continue;
+    }
+    // 单侧：名 号  或  号 名
+    m = t.match(/^([A-Z][A-Z0-9_+\-/.]{1,9})\s+(\d{1,3})$/) || t.match(/^(\d{1,3})\s+([A-Z][A-Z0-9_+\-/.]{1,9})$/);
+    if (m) {
+      const isNumFirst = /^\d/.test(m[1]);
+      const number = isNumFirst ? m[1] : m[2], name = isNumFirst ? m[2] : m[1];
+      if (/^(FIGURE|TABLE|PAGE|REV|VIEW|TOP)$/i.test(name)) continue;
+      out.push({ number, name, type: classifyType("", name), description: "" });
+    }
+  }
+  // 编号需连续覆盖 1..N 的多数，否则多半是误匹配的散字
+  const nums = [...new Set(out.map(p => Number(p.number)).filter(Number.isFinite))];
+  if (nums.length < 4) return [];
+  const max = Math.max(...nums);
+  if (max > 256 || nums.length < max * 0.6) return [];
+  return out;
+}
+
 function dedupe(pins) {
   const map = new Map();
   for (const p of pins) {
@@ -122,7 +157,12 @@ async function extractPinsFromPdf(pdfUrl, expectedPins) {
   const bytes = await fetchPdf(pdfUrl);
   const doc = await parsePdf(bytes);
   const pageNumbers = findPinPages(doc);
-  const pins = dedupe(pageNumbers.flatMap(n => parsePinLines(doc.pages[n - 1])));
+  const fromTable = pageNumbers.flatMap(n => parsePinLines(doc.pages[n - 1]));
+  const fromFigure = pageNumbers.flatMap(n => parsePinConfigFigure(doc.pages[n - 1]));
+  // 表格含描述信息，优先；配置图补齐表格漏掉的引脚
+  const byNum = new Map(fromTable.map(p => [String(p.number), p]));
+  for (const p of fromFigure) if (!byNum.has(String(p.number))) byNum.set(String(p.number), p);
+  const pins = dedupe([...byNum.values()]);
 
   let warning = "";
   if (!pins.length) { cache.set(ck, false, 3600); return null; }
@@ -142,4 +182,4 @@ async function extractPinsFromPdf(pdfUrl, expectedPins) {
   return result;
 }
 
-module.exports = { extractPinsFromPdf, parsePdf, parsePinLines, findPinPages };
+module.exports = { extractPinsFromPdf, parsePdf, parsePinLines, parsePinConfigFigure, findPinPages };

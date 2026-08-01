@@ -15,7 +15,7 @@ function baseMpn(mpn) {
 }
 
 module.exports = withCors(async (req, res) => {
-  const { pn, footprint, kind, datasheet, pins } = req.query || {};
+  const { pn, footprint, kind, datasheet, pins, aiPinout } = req.query || {};
   if (!pn) { res.status(400).json({ error: "pn required" }); return; }
   const expectedPins = pins ? parseInt(pins) : null;
 
@@ -53,8 +53,12 @@ module.exports = withCors(async (req, res) => {
     }
   }
 
-  // ── PDF 也拿不到 → AI 引脚定义（最后一档，仅提供语义，布局仍由程序负责）──
-  if (!out.symbol && !out.pdfPins) {
+  // ── AI 引脚定义：默认不执行 ──
+  // 实测教训：AD8331(20-QSOP，真实引脚 LMD/INH/VPSL/LON/LOP/COML/VIP/VIN/MODE/GAIN/
+  // VCM/RCLMP/HILO/VPOS/VOH/VOL/COMM/ENBV/ENBL，无一个 NC) 曾被模型整份编造成
+  // INL+/INL-/VNEG/GNEG/VREF/OUT + 10 个 NC。名称层面的幻觉无法用统计特征可靠拦截，
+  // 因此只在用户明确要求时才调用，且结果必须显著标注为未验证。
+  if (!out.symbol && !out.pdfPins && String(aiPinout) === "1") {
     try {
       const r = await getAiPinout(pn, expectedPins, footprint);
       if (r?.pins?.length) { out.aiPinout = r; out.sources.symbol = "ai_pinout"; }
