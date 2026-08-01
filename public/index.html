@@ -132,8 +132,6 @@ function SourceTag({source,sourceLabel}){
   return <span style={{fontSize:10,padding:"1px 5px",borderRadius:3,background:bg,color,border:`1px solid ${color}40`}}>📎 {sourceLabel||source} {isAI?"⚠":"✓"}</span>;
 }
 
-// ═══ 封装几何解析与 SVG 预览生成 ═══
-// 有 ezPLM 图则用图；否则按封装名程序化生成，保证任何器件都有预览
 function parsePackage(name){
   if(!name)return null;
   const s=String(name).toUpperCase().replace(/\s/g,"");
@@ -165,117 +163,325 @@ function parsePackage(name){
   return{type:"generic",pins:pinOf(null)||num(/-(\d+)/)||8,bodyW:5,bodyH:5,label:name};
 }
 
-function FootprintSVG({pkg}){
-  const g=parsePackage(pkg);
-  if(!g)return <EmptyPreview text="无封装信息"/>;
-  const W=320,H=260,cx=W/2,cy=H/2,PAD="#c9a227",BODY="#1e3a2f",SILK="#8fd6b4";
-  const el=[];const scale=Math.min(120/Math.max(g.bodyW,1),120/Math.max(g.bodyH,1))*1.4;
-  const bw=g.bodyW*scale,bh=g.bodyH*scale;
+// ═══════════════════════════════════════════════════════════
+// KiCad 解析与渲染（移植自 kicad-part-viewer）
+// 架构要点：无真实文件时生成 .kicad_mod 文本，与真实文件走同一条渲染管线
+// ═══════════════════════════════════════════════════════════
 
-  if(g.type==="chip"){
-    const pw=bw*0.3;
-    el.push(<rect key="b" x={cx-bw/2} y={cy-bh/2} width={bw} height={bh} fill={BODY} rx={1}/>);
-    el.push(<rect key="p1" x={cx-bw/2-pw*0.6} y={cy-bh/2} width={pw} height={bh} fill={PAD} rx={1}/>);
-    el.push(<rect key="p2" x={cx+bw/2-pw*0.4} y={cy-bh/2} width={pw} height={bh} fill={PAD} rx={1}/>);
-  } else if(g.type==="soic"||g.type==="dip"||g.type==="sot"){
-    const per=Math.ceil(g.pins/2),pitch=bh/(per+0.5),pw=bw*0.35,ph=Math.max(4,pitch*0.5);
-    el.push(<rect key="b" x={cx-bw/2} y={cy-bh/2} width={bw} height={bh} fill={BODY} rx={2}/>);
-    el.push(<circle key="d" cx={cx-bw/2+9} cy={cy-bh/2+9} r={3} fill={SILK}/>);
-    for(let i=0;i<per;i++){const y=cy-bh/2+pitch*(i+0.6);
-      el.push(<rect key={`l${i}`} x={cx-bw/2-pw} y={y} width={pw} height={ph} fill={PAD} rx={1}/>);
-      if(i+per<g.pins||g.pins%2===0)el.push(<rect key={`r${i}`} x={cx+bw/2} y={y} width={pw} height={ph} fill={PAD} rx={1}/>);}
-  } else if(g.type==="qfn"||g.type==="qfp"){
-    const per=Math.ceil(g.pins/4),pitch=bw/(per+0.5);
-    const pl=g.type==="qfn"?bw*0.12:bw*0.22,pw2=Math.max(3,pitch*0.5);
-    el.push(<rect key="b" x={cx-bw/2} y={cy-bh/2} width={bw} height={bh} fill={BODY} rx={2}/>);
-    if(g.hasEP)el.push(<rect key="ep" x={cx-bw*0.28} y={cy-bh*0.28} width={bw*0.56} height={bh*0.56} fill={PAD} rx={2} opacity={0.85}/>);
-    el.push(<circle key="d" cx={cx-bw/2+10} cy={cy-bh/2+10} r={3.5} fill={SILK}/>);
+const proxyRes=u=>(!u||typeof u!=="string")?"":(/^https?:\/\//i.test(u)?`/api/ezplm-resource?url=${encodeURIComponent(u)}`:u);
+
+// ── S-expression 块提取（容错强于完整解析器，适合 kicad_mod）──
+function sexprBlocks(txt,keyword){
+  const blocks=[];let pos=0;
+  while((pos=txt.indexOf(`(${keyword}`,pos))>=0){
+    let depth=0,end=pos,inStr=false,esc=false;
+    for(let i=pos;i<txt.length;i++){const c=txt[i];
+      if(inStr){if(esc)esc=false;else if(c==="\\")esc=true;else if(c==='"')inStr=false;}
+      else{if(c==='"')inStr=true;else if(c==="(")depth++;else if(c===")"){depth--;if(depth===0){end=i+1;break}}}}
+    blocks.push(txt.slice(pos,end));pos=end;}
+  return blocks;
+}
+
+// ── 封装名 → 合成 kicad_mod（无真实文件时兜底，走同一渲染路径）──
+function synthKicadMod(pkgName){
+  const g=parsePackage(pkgName);
+  if(!g)return "";
+  const {type,pins,bodyW:bw,bodyH:bh,hasEP}=g;
+  let pads="";
+  if(type==="chip"){
+    const px=bw*0.55;
+    pads=`(pad 1 smd rect (at -${px.toFixed(2)} 0) (size ${(bw*0.4).toFixed(2)} ${(bh*1.1).toFixed(2)}) (layers F.Cu))
+(pad 2 smd rect (at ${px.toFixed(2)} 0) (size ${(bw*0.4).toFixed(2)} ${(bh*1.1).toFixed(2)}) (layers F.Cu))`;
+  }else if(type==="sot"){
+    const n=pins;
+    if(n===3){pads=`(pad 1 smd rect (at -1.1 0.95) (size 1.0 0.8) (layers F.Cu))
+(pad 2 smd rect (at -1.1 -0.95) (size 1.0 0.8) (layers F.Cu))
+(pad 3 smd rect (at 1.1 0) (size 1.0 0.8) (layers F.Cu))`;}
+    else{const per=Math.ceil(n/2),pitch=0.95;
+      for(let i=0;i<per;i++){const y=-(per-1)*pitch/2+i*pitch;
+        pads+=`\n(pad ${i+1} smd rect (at -1.1 ${y.toFixed(2)}) (size 1.0 0.6) (layers F.Cu))`;
+        if(n-i>per)pads+=`\n(pad ${n-i} smd rect (at 1.1 ${y.toFixed(2)}) (size 1.0 0.6) (layers F.Cu))`;}}
+  }else if(type==="dip"){
+    const per=Math.ceil(pins/2),pitch=2.54,off=bw/2;
+    for(let i=0;i<per;i++){const y=-(per-1)*pitch/2+i*pitch;
+      pads+=`\n(pad ${i+1} thru_hole ${i===0?"rect":"circle"} (at -${off} ${y.toFixed(2)}) (size 1.6 1.6) (layers *.Cu))`;
+      pads+=`\n(pad ${pins-i} thru_hole circle (at ${off} ${y.toFixed(2)}) (size 1.6 1.6) (layers *.Cu))`;}
+  }else if(type==="qfn"||type==="qfp"){
+    const per=Math.max(1,Math.ceil(pins/4)),pitch=bw/(per+0.6);
+    const ext=type==="qfn"?0.35:0.9, padL=type==="qfn"?0.5:1.1, padW=Math.max(0.2,pitch*0.55);
+    if(hasEP)pads+=`\n(pad 9 smd rect (at 0 0) (size ${(bw*0.5).toFixed(2)} ${(bh*0.5).toFixed(2)}) (layers F.Cu))`;
     for(let i=0;i<per;i++){
-      const off=-bw/2+pitch*(i+0.75);
-      el.push(<rect key={`b${i}`} x={cx+off-pw2/2} y={cy+bh/2-(g.type==="qfn"?pl:0)} width={pw2} height={pl} fill={PAD} rx={1}/>);
-      el.push(<rect key={`t${i}`} x={cx+off-pw2/2} y={cy-bh/2-(g.type==="qfn"?0:pl)} width={pw2} height={pl} fill={PAD} rx={1}/>);
-      el.push(<rect key={`l${i}`} x={cx-bw/2-(g.type==="qfn"?0:pl)} y={cy+off-pw2/2} width={pl} height={pw2} fill={PAD} rx={1}/>);
-      el.push(<rect key={`r${i}`} x={cx+bw/2-(g.type==="qfn"?pl:0)} y={cy+off-pw2/2} width={pl} height={pw2} fill={PAD} rx={1}/>);}
-  } else if(g.type==="bga"){
-    const n=Math.ceil(Math.sqrt(g.pins)),pitch=bw/n;
-    el.push(<rect key="b" x={cx-bw/2} y={cy-bh/2} width={bw} height={bh} fill={BODY} rx={2}/>);
-    for(let r=0;r<n;r++)for(let c=0;c<n;c++)
-      el.push(<circle key={`${r}-${c}`} cx={cx-bw/2+pitch*(c+0.5)} cy={cy-bh/2+pitch*(r+0.5)} r={Math.max(2,pitch*0.3)} fill={PAD}/>);
-  } else {
-    el.push(<rect key="b" x={cx-bw/2} y={cy-bh/2} width={bw} height={bh} fill={BODY} rx={2}/>);
+      const q=-((per-1)*pitch)/2+i*pitch;
+      pads+=`\n(pad ${i+1} smd rect (at -${(bw/2+ext).toFixed(2)} ${q.toFixed(2)}) (size ${padL} ${padW.toFixed(2)}) (layers F.Cu))`;
+      pads+=`\n(pad ${i+1+per} smd rect (at ${q.toFixed(2)} ${(bh/2+ext).toFixed(2)}) (size ${padW.toFixed(2)} ${padL}) (layers F.Cu))`;
+      pads+=`\n(pad ${i+1+per*2} smd rect (at ${(bw/2+ext).toFixed(2)} ${(-q).toFixed(2)}) (size ${padL} ${padW.toFixed(2)}) (layers F.Cu))`;
+      pads+=`\n(pad ${i+1+per*3} smd rect (at ${(-q).toFixed(2)} -${(bh/2+ext).toFixed(2)}) (size ${padW.toFixed(2)} ${padL}) (layers F.Cu))`;}
+  }else if(type==="bga"){
+    const n=Math.ceil(Math.sqrt(pins)),pitch=bw/n;
+    for(let r=0;r<n;r++)for(let c=0;c<n;c++){
+      const x=-bw/2+pitch*(c+0.5),y=-bh/2+pitch*(r+0.5);
+      pads+=`\n(pad ${r*n+c+1} smd circle (at ${x.toFixed(2)} ${y.toFixed(2)}) (size ${(pitch*0.55).toFixed(2)} ${(pitch*0.55).toFixed(2)}) (layers F.Cu))`;}
+  }else{ // soic / generic 两侧引脚
+    const per=Math.ceil(pins/2),pitch=Math.min(1.27,bh/(per+0.4)),off=bw/2+0.8;
+    for(let i=0;i<per;i++){const y=-(per-1)*pitch/2+i*pitch;
+      pads+=`\n(pad ${i+1} smd ${i===0?"rect":"roundrect"} (at -${off.toFixed(2)} ${y.toFixed(2)}) (size 1.5 ${(pitch*0.5).toFixed(2)}) (layers F.Cu))`;
+      if(pins-i>per)pads+=`\n(pad ${pins-i} smd roundrect (at ${off.toFixed(2)} ${y.toFixed(2)}) (size 1.5 ${(pitch*0.5).toFixed(2)}) (layers F.Cu))`;}
   }
-  return(<div style={{textAlign:"center"}}>
-    <svg width={W} height={H} style={{background:"#0f2419",borderRadius:8}}>
-      {el}
-      <text x={cx} y={28} textAnchor="middle" fill={SILK} fontSize={13} fontFamily="'DM Mono',monospace">{g.label}</text>
-      <text x={cx} y={H-16} textAnchor="middle" fill="#5a8a72" fontSize={11} fontFamily="'DM Mono',monospace">{g.pins} pins{g.bodyW?` · ${g.bodyW}×${g.bodyH}mm`:""}</text>
-    </svg>
-    <div style={{fontSize:11,color:C.textMute,marginTop:8}}>⚠ 程序化生成的封装示意图（依据封装名推算），非精确制造数据；请以 datasheet 为准</div>
-  </div>);
+  const hw=bw/2,hh=bh/2;
+  return `(module SYNTH (layer F.Cu)
+(fp_line (start ${-hw} ${-hh}) (end ${hw} ${-hh}) (layer F.SilkS) (width 0.12))
+(fp_line (start ${hw} ${-hh}) (end ${hw} ${hh}) (layer F.SilkS) (width 0.12))
+(fp_line (start ${hw} ${hh}) (end ${-hw} ${hh}) (layer F.SilkS) (width 0.12))
+(fp_line (start ${-hw} ${hh}) (end ${-hw} ${-hh}) (layer F.SilkS) (width 0.12))
+(fp_line (start ${-hw-0.4} ${-hh-0.4}) (end ${hw+0.4} ${-hh-0.4}) (layer F.CrtYd) (width 0.05))
+(fp_line (start ${hw+0.4} ${-hh-0.4}) (end ${hw+0.4} ${hh+0.4}) (layer F.CrtYd) (width 0.05))
+(fp_line (start ${hw+0.4} ${hh+0.4}) (end ${-hw-0.4} ${hh+0.4}) (layer F.CrtYd) (width 0.05))
+(fp_line (start ${-hw-0.4} ${hh+0.4}) (end ${-hw-0.4} ${-hh-0.4}) (layer F.CrtYd) (width 0.05))
+${pads}
+)`;
 }
 
-function SymbolSVG({pkg,partNumber,category}){
-  const g=parsePackage(pkg)||{pins:8};
-  const per=Math.max(1,Math.ceil(g.pins/2)),W=320,H=Math.max(200,per*26+70);
-  const bw=150,bh=per*26,cx=W/2,top=45;
-  const el=[];
-  el.push(<rect key="b" x={cx-bw/2} y={top} width={bw} height={bh} fill="none" stroke={C.green} strokeWidth={2}/>);
-  for(let i=0;i<per;i++){const y=top+13+i*26;
-    el.push(<line key={`ll${i}`} x1={cx-bw/2-28} y1={y} x2={cx-bw/2} y2={y} stroke={C.green} strokeWidth={1.5}/>);
-    el.push(<text key={`ln${i}`} x={cx-bw/2-32} y={y+4} textAnchor="end" fontSize={10} fill={C.textMute} fontFamily="'DM Mono',monospace">{i+1}</text>);
-    const rp=g.pins-i;
-    if(rp>per){
-      el.push(<line key={`rl${i}`} x1={cx+bw/2} y1={y} x2={cx+bw/2+28} y2={y} stroke={C.green} strokeWidth={1.5}/>);
-      el.push(<text key={`rn${i}`} x={cx+bw/2+32} y={y+4} fontSize={10} fill={C.textMute} fontFamily="'DM Mono',monospace">{rp}</text>);}}
-  return(<div style={{textAlign:"center"}}>
-    <svg width={W} height={H} style={{background:"#fff",borderRadius:8,border:`1px solid ${C.borderLight}`}}>
-      {el}
-      <text x={cx} y={top+bh/2} textAnchor="middle" fontSize={12} fontWeight="600" fill={C.green} fontFamily="'DM Mono',monospace">{partNumber}</text>
-      <text x={cx} y={26} textAnchor="middle" fontSize={11} fill={C.textMute}>{category||"器件符号"}</text>
-    </svg>
-    <div style={{fontSize:11,color:C.textMute,marginTop:8}}>⚠ 通用示意符号（按引脚数生成），引脚定义需查 datasheet</div>
-  </div>);
+// ── 封装渲染：解析 kicad_mod → SVG（真实几何）──
+function renderFootprintToSvg(txt,svg,onPinClick,selectedPin){
+  svg.innerHTML="";
+  const vb=svg.viewBox?.baseVal,w=vb?.width||800,h=vb?.height||520;
+  const mk=(t,a={})=>{const e=document.createElementNS("http://www.w3.org/2000/svg",t);Object.entries(a).forEach(([k,v])=>v!=null&&e.setAttribute(k,v));return e;};
+  const graphics=[];
+  for(const b of sexprBlocks(txt,"fp_line")){
+    const a=b.match(/\(start\s+([-\d.]+)\s+([-\d.]+)\)/),e=b.match(/\(end\s+([-\d.]+)\s+([-\d.]+)\)/),l=b.match(/\(layer\s+"?([^)"]+)"?\)/);
+    if(a&&e&&l)graphics.push({kind:"line",x1:+a[1],y1:+a[2],x2:+e[1],y2:+e[2],layer:l[1]});}
+  for(const b of sexprBlocks(txt,"fp_circle")){
+    const c=b.match(/\(center\s+([-\d.]+)\s+([-\d.]+)\)/),e=b.match(/\(end\s+([-\d.]+)\s+([-\d.]+)\)/),l=b.match(/\(layer\s+"?([^)"]+)"?\)/);
+    if(c&&e&&l)graphics.push({kind:"circle",cx:+c[1],cy:+c[2],ex:+e[1],ey:+e[2],layer:l[1]});}
+  for(const b of sexprBlocks(txt,"fp_arc")){
+    const c=b.match(/\(start\s+([-\d.]+)\s+([-\d.]+)\)/),e=b.match(/\(end\s+([-\d.]+)\s+([-\d.]+)\)/),l=b.match(/\(layer\s+"?([^)"]+)"?\)/);
+    if(c&&e&&l)graphics.push({kind:"line",x1:+c[1],y1:+c[2],x2:+e[1],y2:+e[2],layer:l[1]});}
+  const pads=[];
+  for(const b of sexprBlocks(txt,"pad")){
+    const head=b.match(/^\(pad\s+"?([^\s"]+)"?\s+(\S+)\s+(\S+)/),
+          at=b.match(/\(at\s+([-\d.]+)\s+([-\d.]+)(?:\s+([-\d.]+))?\)/),
+          sz=b.match(/\(size\s+([-\d.]+)\s+([-\d.]+)\)/);
+    if(head&&at&&sz)pads.push({num:head[1],type:head[2],shape:head[3],x:+at[1],y:+at[2],rot:+(at[3]||0),w:+sz[1],h:+sz[2]});}
+  if(!graphics.length&&!pads.length){svg.innerHTML="";return 0;}
+  const pts=[];
+  graphics.forEach(o=>o.kind==="line"?pts.push([o.x1,o.y1],[o.x2,o.y2]):pts.push([o.cx,o.cy],[o.ex,o.ey]));
+  pads.forEach(p=>{const r=Math.hypot(p.w,p.h)/2;pts.push([p.x-r,p.y-r],[p.x+r,p.y+r]);});
+  let minX=-5,maxX=5,minY=-4,maxY=4;
+  if(pts.length){minX=Math.min(...pts.map(p=>p[0]));maxX=Math.max(...pts.map(p=>p[0]));minY=Math.min(...pts.map(p=>p[1]));maxY=Math.max(...pts.map(p=>p[1]));}
+  const sc=Math.min((w-90)/Math.max(maxX-minX,1),(h-80)/Math.max(maxY-minY,1)),cx=(minX+maxX)/2,cy=(minY+maxY)/2;
+  const g=mk("g",{transform:`translate(${w/2} ${h/2}) scale(${sc}) translate(${-cx} ${-cy})`});svg.appendChild(g);
+  const style=l=>l.includes("CrtYd")?{s:"#db6a2b",d:"0.18 0.12",wd:.055}:l.includes("Silk")?{s:"#d6b937",d:"",wd:.10}:l.includes("Fab")?{s:"#6c7d93",d:"",wd:.055}:{s:"#9aa8b8",d:"",wd:.045};
+  graphics.forEach(o=>{const st=style(o.layer);
+    const el=o.kind==="line"?mk("line",{x1:o.x1,y1:o.y1,x2:o.x2,y2:o.y2}):mk("circle",{cx:o.cx,cy:o.cy,r:Math.hypot(o.ex-o.cx,o.ey-o.cy)});
+    el.setAttribute("fill","none");el.setAttribute("stroke",st.s);el.setAttribute("stroke-width",st.wd);
+    if(st.d)el.setAttribute("stroke-dasharray",st.d);g.appendChild(el);});
+  pads.forEach(p=>{
+    const sel=selectedPin!=null&&String(selectedPin)===String(p.num);
+    const pg=mk("g",{transform:`translate(${p.x} ${p.y}) rotate(${p.rot})`,style:"cursor:pointer"});
+    const round=p.shape==="circle"||p.shape==="oval";
+    const shape=round?mk("ellipse",{cx:0,cy:0,rx:p.w/2,ry:p.h/2}):mk("rect",{x:-p.w/2,y:-p.h/2,width:p.w,height:p.h,rx:p.shape.includes("round")?.12:0});
+    shape.setAttribute("fill",sel?"#006cff":(p.num==="1"?"#d77b31":"#d69f36"));
+    shape.setAttribute("stroke",sel?"#003e9f":"#8c6419");shape.setAttribute("stroke-width",sel?".11":".04");
+    pg.appendChild(shape);
+    const t=mk("text",{x:0,y:0,transform:`rotate(${-p.rot})`,"text-anchor":"middle","dominant-baseline":"middle",
+      "font-size":Math.max(.28,Math.min(p.w,p.h)*.42),fill:"#fff","font-family":"Arial","font-weight":sel?"900":"700"});
+    t.textContent=p.num;pg.appendChild(t);
+    if(onPinClick)pg.addEventListener("click",e=>{e.stopPropagation();onPinClick(p.num);});
+    g.appendChild(pg);});
+  const legend=mk("g",{transform:`translate(22 ${h-22})`});
+  [["#d6b937","F.SilkS"],["#db6a2b","F.CrtYd"],["#6c7d93","F.Fab"],["#d77b31","Pin 1"]].forEach((it,i)=>{
+    legend.appendChild(mk("line",{x1:i*95,y1:0,x2:i*95+18,y2:0,stroke:it[0],"stroke-width":3}));
+    const t=mk("text",{x:i*95+23,y:5,fill:"#54657c","font-size":12});t.textContent=it[1];legend.appendChild(t);});
+  svg.appendChild(legend);
+  return pads.length;
 }
 
-function Model3DSVG({pkg}){
-  const g=parsePackage(pkg);
-  if(!g)return <EmptyPreview text="无封装信息"/>;
-  const W=320,H=240,cx=W/2,cy=H/2+10;
-  const s=Math.min(90/Math.max(g.bodyW,1),90/Math.max(g.bodyH,1))*1.3;
-  const w=g.bodyW*s,d=g.bodyH*s,h=Math.max(14,w*0.18);
-  const ox=d*0.5,oy=d*0.28;
-  const top=`${cx-w/2},${cy-h} ${cx-w/2+ox},${cy-h-oy} ${cx+w/2+ox},${cy-h-oy} ${cx+w/2},${cy-h}`;
-  const right=`${cx+w/2},${cy-h} ${cx+w/2+ox},${cy-h-oy} ${cx+w/2+ox},${cy-oy} ${cx+w/2},${cy}`;
-  return(<div style={{textAlign:"center"}}>
-    <svg width={W} height={H} style={{background:"linear-gradient(160deg,#f7faf8,#e8f0ec)",borderRadius:8,border:`1px solid ${C.borderLight}`}}>
-      <ellipse cx={cx+ox*0.5} cy={cy+8} rx={w*0.62} ry={8} fill="#00000018"/>
-      <rect x={cx-w/2} y={cy-h} width={w} height={h} fill="#2c3e35"/>
-      <polygon points={top} fill="#3d5449"/>
-      <polygon points={right} fill="#1f2d26"/>
-      <circle cx={cx-w/2+11} cy={cy-h/2} r={3} fill="#8fd6b4"/>
-      <text x={cx+ox*0.5} y={H-14} textAnchor="middle" fontSize={11} fill={C.textMute} fontFamily="'DM Mono',monospace">{g.label} · {g.bodyW}×{g.bodyH}mm</text>
-    </svg>
-    <div style={{fontSize:11,color:C.textMute,marginTop:8}}>⚠ 按封装尺寸生成的立体示意图，非精确 STEP 模型</div>
-  </div>);
+// ── 符号：现代 .kicad_sym → legacy 中间格式 ──
+function tokenizeSexpr(text){
+  const t=[];let i=0;
+  while(i<text.length){const c=text[i];
+    if(/\s/.test(c)){i++;continue}
+    if(c==="("||c===")"){t.push(c);i++;continue}
+    if(c==='"'){let out="",esc=false;i++;
+      while(i<text.length){const ch=text[i++];if(esc){out+=ch;esc=false}else if(ch==="\\")esc=true;else if(ch==='"')break;else out+=ch}
+      t.push({quoted:true,value:out});continue}
+    let j=i;while(j<text.length&&!/[\s()]/.test(text[j]))j++;
+    t.push(text.slice(i,j));i=j;}
+  return t;
+}
+function parseSexpr(text){
+  const tk=tokenizeSexpr(text);let i=0;
+  function p(){if(tk[i]!=="(")return tk[i++];i++;const o=[];while(i<tk.length&&tk[i]!==")")o.push(p());i++;return o}
+  return p();
+}
+const atom=n=>(n&&typeof n==="object"&&n.quoted)?n.value:String(n??"");
+const childOf=(n,k)=>Array.isArray(n)?n.find(x=>Array.isArray(x)&&atom(x[0])===k):undefined;
+const childrenOf=(n,k)=>Array.isArray(n)?n.filter(x=>Array.isArray(x)&&atom(x[0])===k):[];
+const xyOf=(n,k)=>{const c=childOf(n,k);return c?[Number(atom(c[1]))||0,Number(atom(c[2]))||0]:[0,0]};
+
+function modernSymbolToLegacy(text,wantName){
+  if(!text.includes("(kicad_symbol_lib"))return "";
+  let root;try{root=parseSexpr(text)}catch{return ""}
+  const avail=childrenOf(root,"symbol");
+  const want=String(wantName||"").toLowerCase();
+  const outer=avail.find(n=>atom(n[1]).toLowerCase()===want)||avail.find(n=>atom(n[1]).toLowerCase().endsWith(`:${want}`))||avail[0];
+  if(!outer)return "";
+  const name=atom(outer[1])||wantName||"PART";
+  const nested=childrenOf(outer,"symbol");
+  const S=39.3700787,n=v=>Math.round(Number(v||0)*S);
+  const ang2ori=a=>{const x=(((Number(a)||0)+180)%360+360)%360;return x===0?"L":x===90?"D":x===180?"R":"U"};
+  const lines=[`DEF ${name.replace(/\s+/g,"_")} U 0 20 Y Y 1 F N`,"DRAW"];
+  const add=(node,unit)=>{
+    for(const it of node.slice(2)){
+      if(!Array.isArray(it))continue;
+      const k=atom(it[0]);
+      if(k==="rectangle"){const[x1,y1]=xyOf(it,"start"),[x2,y2]=xyOf(it,"end");
+        const ft=atom(childOf(childOf(it,"fill")||[],"type")?.[1]);
+        lines.push(`S ${n(x1)} ${n(y1)} ${n(x2)} ${n(y2)} ${unit} 1 10 ${(ft==="background"||ft==="color")?"f":"N"}`);}
+      else if(k==="polyline"){const pn=childOf(it,"pts"),pts=pn?childrenOf(pn,"xy"):[];
+        if(pts.length)lines.push(`P ${pts.length} ${unit} 1 10 ${pts.map(p=>`${n(atom(p[1]))} ${n(atom(p[2]))}`).join(" ")} N`);}
+      else if(k==="circle"){const[cx,cy]=xyOf(it,"center");
+        lines.push(`C ${n(cx)} ${n(cy)} ${n(Number(atom(childOf(it,"radius")?.[1]))||0)} ${unit} 1 10 N`);}
+      else if(k==="pin"){const at=childOf(it,"at")||[];
+        const x=Number(atom(at[1]))||0,y=Number(atom(at[2]))||0,a=((Number(atom(at[3]))||0)%360+360)%360;
+        const len=Number(atom(childOf(it,"length")?.[1]))||2.54;
+        const nm=atom(childOf(it,"name")?.[1])||"~",num=atom(childOf(it,"number")?.[1])||"~";
+        lines.push(`X ${nm.replace(/\s+/g,"_")} ${num} ${n(x)} ${n(y)} ${n(len)} ${ang2ori(a)} 50 50 ${unit} 1 P`);}}};
+  if(nested.length){let mu=1;
+    for(const un of nested){const m=atom(un?.[1]).match(/_(\d+)_(\d+)$/);const u=m?Number(m[1]):0;mu=Math.max(mu,u||1);add(un,u||0);}
+    lines[0]=`DEF ${name.replace(/\s+/g,"_")} U 0 20 Y Y ${mu} F N`;}
+  else add(outer,1);
+  lines.push("ENDDRAW","ENDDEF");return lines.join("\n");
+}
+function extractLegacySymbol(lib,name){
+  if(!name)return "";
+  const esc=String(name).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+  return lib.match(new RegExp(`DEF\\s+${esc}\\s+[\\s\\S]*?ENDDEF`))?.[0]||"";
+}
+// 无符号文件时按引脚数生成通用符号
+function genericSymbol(partNumber,pinCount){
+  const count=Math.max(2,pinCount||8),left=Math.ceil(count/2),right=count-left;
+  const L=["DEF PART U 0 5 Y Y 1 F N","DRAW","S -220 260 220 -260 0 1 10 F"];
+  for(let i=0;i<left;i++){const y=left===1?0:200-i*(400/(left-1));L.push(`X ~ ${i+1} -320 ${Math.round(y)} 100 R 50 50 1 1 P`);}
+  for(let i=0;i<right;i++){const y=right===1?0:-200+i*(400/(right-1));L.push(`X ~ ${left+i+1} 320 ${Math.round(y)} 100 L 50 50 1 1 P`);}
+  L.push("ENDDRAW","ENDDEF");return L.join("\n");
+}
+// ── 符号渲染 ──
+function renderSymbolToSvg(txt,svg,unit,onPinClick,selectedPin){
+  svg.innerHTML="";
+  const vb=svg.viewBox?.baseVal,w=vb?.width||800,h=vb?.height||520,scale=.72;
+  const mk=(t,a={})=>{const e=document.createElementNS("http://www.w3.org/2000/svg",t);Object.entries(a).forEach(([k,v])=>v!=null&&e.setAttribute(k,v));return e;};
+  const g=mk("g",{transform:`translate(${w/2} ${h/2}) scale(${scale} ${-scale})`}),tl=mk("g",{});
+  svg.appendChild(g);svg.appendChild(tl);
+  const toScreen=(x,y)=>({x:w/2+x*scale,y:h/2-y*scale});
+  let inDraw=false,count=0;
+  for(const l of txt.split(/\r?\n/)){
+    if(l.trim()==="DRAW"){inDraw=true;continue}
+    if(l.trim()==="ENDDRAW")break;
+    if(!inDraw)continue;
+    const p=l.trim().split(/\s+/);if(!p.length)continue;
+    const ui={S:5,P:2,C:4,A:6,X:9}[p[0]];const iu=ui==null?0:(+p[ui]||0);
+    if(iu!==0&&iu!==unit)continue;
+    if(p[0]==="S"){const[x1,y1,x2,y2]=p.slice(1,5).map(Number);
+      g.appendChild(mk("rect",{x:Math.min(x1,x2),y:Math.min(y1,y2),width:Math.abs(x2-x1),height:Math.abs(y2-y1),
+        fill:p[p.length-1]?.toLowerCase()==="f"?"#fffdb5":"none",stroke:"#a40000","stroke-width":10}));}
+    else if(p[0]==="P"){const k=+p[1],off=5,pts=[];for(let i=0;i<k;i++)pts.push(`${p[off+i*2]},${p[off+i*2+1]}`);
+      g.appendChild(mk("polyline",{points:pts.join(" "),fill:p[p.length-1]==="F"?"#fffdb5":"none",stroke:"#a40000","stroke-width":10,"stroke-linejoin":"round"}));}
+    else if(p[0]==="C"){g.appendChild(mk("circle",{cx:p[1],cy:p[2],r:p[3],fill:"none",stroke:"#a40000","stroke-width":10}));}
+    else if(p[0]==="X"){
+      count++;
+      const name=p[1],num=p[2],x=+p[3],y=+p[4],len=+p[5],ori=p[6];let x2=x,y2=y;
+      if(ori==="R")x2+=len;if(ori==="L")x2-=len;if(ori==="U")y2+=len;if(ori==="D")y2-=len;
+      const sel=selectedPin!=null&&String(selectedPin)===String(num);
+      const col=sel?"#006cff":"#a40000";
+      const pg=mk("g",{style:"cursor:pointer"});
+      pg.appendChild(mk("line",{x1:x,y1:y,x2,y2,stroke:"transparent","stroke-width":34}));
+      pg.appendChild(mk("line",{x1:x,y1:y,x2,y2,stroke:col,"stroke-width":sel?13:8}));
+      pg.appendChild(mk("circle",{cx:x,cy:y,r:11,fill:"none",stroke:col,"stroke-width":3}));
+      if(onPinClick)pg.addEventListener("click",e=>{e.stopPropagation();onPinClick(num);});
+      g.appendChild(pg);
+      const outer=toScreen(x,y),inner=toScreen(x2,y2);
+      const dx=inner.x-outer.x,dy=inner.y-outer.y,dist=Math.hypot(dx,dy)||1,ux=dx/dist,uy=dy/dist;
+      const mkT=(text,pos,size,{anchor="middle",rotation=0,color="#006b68",weight="500"}={})=>{
+        const t=mk("text",{x:pos.x,y:pos.y,transform:rotation?`rotate(${rotation} ${pos.x} ${pos.y})`:null,
+          fill:color,"font-size":size,"font-family":"Arial","font-weight":weight,"text-anchor":anchor,
+          "dominant-baseline":"middle","paint-order":"stroke",stroke:"#fffdb5","stroke-width":"2.5"});
+        t.textContent=text;tl.appendChild(t);};
+      const vert=ori==="U"||ori==="D",noff=vert?42:18;
+      const nameAt={x:inner.x+ux*noff,y:inner.y+uy*noff};
+      let na="middle",nr=0;
+      if(ori==="R")na="start";else if(ori==="L")na="end";else nr=-90;
+      const base={x:outer.x+ux*16,y:outer.y+uy*16};
+      const numAt=Math.abs(dx)>=Math.abs(dy)?{x:base.x,y:base.y-17}:{x:base.x-13,y:base.y};
+      if(name&&name!=="~")mkT(name,nameAt,26,{anchor:na,rotation:nr,color:sel?"#006cff":"#006b68",weight:sel?"800":"500"});
+      if(num&&num!=="~")mkT(num,numAt,23,{anchor:Math.abs(dx)>=Math.abs(dy)?"middle":"end",color:sel?"#006cff":"#a40000",weight:sel?"800":"500"});}}
+  return count;
 }
 
-function EmptyPreview({text}){
-  return<div style={{padding:"50px",textAlign:"center",color:C.textMute,background:C.bgSoft,borderRadius:8}}>
-    <div style={{fontSize:32,marginBottom:8}}>📐</div><div style={{fontSize:13}}>{text}</div></div>;
-}
-
-const isImg=u=>u&&/\.(png|jpe?g|svg|gif|webp)(\?|$)/i.test(u);
-
-// ═══ 图形预览面板：符号 / 封装 / 3D ═══
+// ═══ 图形预览面板：符号 / 封装 / 3D（真实 KiCad 文件优先）═══
 function GraphicsPanel({d,pn}){
   const[g,setG]=useState("footprint");
+  const[fpText,setFpText]=useState(null);      // kicad_mod 文本
+  const[symText,setSymText]=useState(null);    // 符号 legacy 文本
+  const[fpReal,setFpReal]=useState(false);
+  const[symReal,setSymReal]=useState(false);
+  const[loading,setLoading]=useState(true);
+  const[pin,setPin]=useState(null);            // 选中引脚（符号↔封装联动）
+  const fpRef=useRef(null),symRef=useRef(null);
   const pkg=d?.footprint||(d?.parameters||[]).find(p=>/封装|package/i.test(p.name))?.value;
-  const urls={symbol:d?.symbolUrl,footprint:d?.footprintFileUrl,model3d:d?.model3dUrl};
-  const cur=urls[g==="model3d"?"model3d":g];
+
+  // 拉取真实 KiCad 文件（经代理），失败则合成
+  useEffect(()=>{
+    let dead=false;
+    (async()=>{
+      setLoading(true);setPin(null);
+      // 封装
+      let ft=null,real=false;
+      if(d?.footprintFileUrl){
+        try{
+          const r=await fetch(proxyRes(d.footprintFileUrl));
+          if(r.ok){const t=await r.text();if(t.includes("(pad")||t.includes("(fp_")){ft=t;real=true;}}
+        }catch(e){}
+      }
+      if(!ft)ft=synthKicadMod(pkg);
+      if(dead)return;
+      setFpText(ft);setFpReal(real);
+      // 符号
+      let st=null,sreal=false;
+      if(d?.symbolUrl){
+        try{
+          const r=await fetch(proxyRes(d.symbolUrl));
+          if(r.ok){
+            const raw=await r.text();
+            const conv=extractLegacySymbol(raw,pn)||modernSymbolToLegacy(raw,pn)||extractLegacySymbol(raw,d?.partNumber);
+            if(conv){st=conv;sreal=true;}
+          }
+        }catch(e){}
+      }
+      if(!st){const gp=parsePackage(pkg);st=genericSymbol(pn,gp?.pins||8);}
+      if(dead)return;
+      setSymText(st);setSymReal(sreal);setLoading(false);
+    })();
+    return()=>{dead=true};
+  },[d,pn,pkg]);
+
+  // 渲染到 SVG
+  useEffect(()=>{
+    if(g==="footprint"&&fpRef.current&&fpText)renderFootprintToSvg(fpText,fpRef.current,setPin,pin);
+  },[g,fpText,pin]);
+  useEffect(()=>{
+    if(g==="symbol"&&symRef.current&&symText)renderSymbolToSvg(symText,symRef.current,1,setPin,pin);
+  },[g,symText,pin]);
+
   const dl=(d?.downloads||[]).find(f=>f.type===(g==="model3d"?"model3d":g));
+  const srcTag=(real,realLabel)=>(
+    <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,
+      background:real?C.greenLight:C.amberBg,color:real?C.green:C.amber,
+      border:`1px solid ${real?C.greenMid:"#f0dca0"}`}}>
+      {real?`✓ ${realLabel}`:"⚠ 依封装名合成的示意图，非精确制造数据"}</span>);
 
   return(<div>
-    <div style={{display:"flex",gap:6,marginBottom:14,justifyContent:"center"}}>
+    <div style={{display:"flex",gap:6,marginBottom:12,justifyContent:"center"}}>
       {[["symbol","🔣 原理图符号"],["footprint","📐 PCB 封装"],["model3d","🧊 3D 模型"]].map(([k,l])=>(
         <button key={k} onClick={()=>setG(k)}
           style={{padding:"7px 16px",borderRadius:7,borderWidth:1.5,borderStyle:"solid",
@@ -283,24 +489,39 @@ function GraphicsPanel({d,pn}){
             color:g===k?C.green:C.textSec,fontSize:13,fontWeight:g===k?600:400,cursor:"pointer"}}>{l}</button>))}
     </div>
 
-    <div style={{display:"flex",justifyContent:"center",marginBottom:12}}>
-      {isImg(cur)
-        ? <div style={{textAlign:"center"}}>
-            <img src={cur} alt={g} style={{maxWidth:"100%",maxHeight:280,borderRadius:8,border:`1px solid ${C.borderLight}`,background:"#fff"}}/>
-            <div style={{fontSize:11,color:C.green,marginTop:8}}>✓ 来自 ezPLM 元器件库</div>
-          </div>
-        : g==="symbol" ? <SymbolSVG pkg={pkg} partNumber={pn} category={d?.category}/>
-        : g==="footprint" ? <FootprintSVG pkg={pkg}/>
-        : <Model3DSVG pkg={pkg}/>}
-    </div>
+    {loading&&<div style={{padding:"50px",textAlign:"center",color:C.textMute}}>
+      <div style={{width:28,height:28,border:`3px solid ${C.borderLight}`,borderTopColor:C.green,borderRadius:"50%",animation:"spin 0.8s linear infinite",margin:"0 auto 10px"}}/>
+      正在加载 KiCad 库文件…</div>}
 
-    {(cur||dl)&&(<div style={{display:"flex",justifyContent:"center",gap:8}}>
-      <a href={dl?.url||cur} target="_blank" rel="noreferrer"
-        style={{padding:"9px 20px",borderRadius:8,background:C.green,color:"#fff",fontSize:13,fontWeight:600,textDecoration:"none"}}>
-        ⬇ 下载{dl?.fname||(g==="symbol"?"原理图符号":g==="footprint"?"PCB封装(KiCad)":"3D模型(STEP)")}
-      </a>
+    {!loading&&(<div>
+      <div style={{textAlign:"center",marginBottom:8}}>
+        {g==="footprint"&&srcTag(fpReal,"真实 KiCad 封装文件")}
+        {g==="symbol"&&srcTag(symReal,"真实 KiCad 符号文件")}
+        {g==="model3d"&&srcTag(false,"")}
+      </div>
+
+      {g==="footprint"&&<svg ref={fpRef} viewBox="0 0 800 520" style={{width:"100%",height:340,background:"#fff",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>}
+      {g==="symbol"&&<svg ref={symRef} viewBox="0 0 800 520" style={{width:"100%",height:340,background:"#fffdf5",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>}
+      {g==="model3d"&&<div style={{display:"flex",justifyContent:"center"}}><Model3DSVG pkg={pkg}/></div>}
+
+      {(g==="footprint"||g==="symbol")&&<div style={{textAlign:"center",fontSize:11,color:C.textMute,marginTop:6}}>
+        💡 点击引脚或焊盘可高亮对应位置{pin!=null?` · 当前选中 Pin ${pin}`:""}
+        {pin!=null&&<button onClick={()=>setPin(null)} style={{marginLeft:8,padding:"1px 8px",borderRadius:4,border:`1px solid ${C.border}`,background:"#fff",fontSize:11,cursor:"pointer"}}>清除</button>}
+      </div>}
+
+      {g==="model3d"&&d?.model3dUrl&&<div style={{textAlign:"center",fontSize:11,color:C.textMute,marginTop:6}}>
+        ezPLM 提供 STEP 格式模型（浏览器无法直接渲染），可下载后用 KiCad/FreeCAD 打开
+      </div>}
+
+      {(dl||d?.footprintFileUrl||d?.model3dUrl)&&(<div style={{display:"flex",justifyContent:"center",marginTop:12}}>
+        <a href={proxyRes(dl?.url||(g==="footprint"?d?.footprintFileUrl:g==="model3d"?d?.model3dUrl:d?.symbolUrl))}
+          target="_blank" rel="noreferrer" download
+          style={{padding:"9px 20px",borderRadius:8,background:C.green,color:"#fff",fontSize:13,fontWeight:600,textDecoration:"none",
+            display:(g==="footprint"&&d?.footprintFileUrl)||(g==="model3d"&&d?.model3dUrl)||(g==="symbol"&&d?.symbolUrl)?"inline-block":"none"}}>
+          ⬇ 下载 {dl?.fname||(g==="symbol"?"符号文件":g==="footprint"?"KiCad 封装":"STEP 模型")}
+        </a>
+      </div>)}
     </div>)}
-    {!cur&&!dl&&<div style={{textAlign:"center",fontSize:12,color:C.textMute}}>ezPLM 暂未提供该资源文件，以上为程序化生成的示意图</div>}
   </div>);
 }
 
