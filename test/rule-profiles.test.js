@@ -43,12 +43,30 @@ test("国产替代：非国产必须拒绝", async t => {
   });
 });
 
-test("低成本：无价格数据降级而非静默通过", async t => {
-  await t.test("有价格通过", () =>
-    assert.equal(applyProfile("lowCost", mk(100, "SOIC-8", { market: { priceUSD100: 0.2 } })).downgrade, undefined));
-  await t.test("无价格降级为待核验", () => {
-    const r = applyProfile("lowCost", mk(100, "SOIC-8"));
+test("低成本：只认真实分销商报价", async t => {
+  await t.test("真实分销商报价 + 有货 → 通过", () =>
+    assert.equal(applyProfile("lowCost", mk(100, "SOIC-8",
+      { market: { priceUSD100: 0.2, source: "distributor_api", stock: "有货", stockQty: 500 } })).downgrade, undefined));
+  await t.test("AI 估价 → 降级为待核验，不参与成本排名", () => {
+    const r = applyProfile("lowCost", mk(100, "SOIC-8", { market: { priceUSD100: 0.2, source: "ai_estimate" } }));
     assert.equal(r.pass, true); assert.equal(r.downgrade, "NEEDS_VERIFICATION");
+    assert.match(r.reason, /AI 估价|无真实/);
+  });
+  await t.test("无价格数据 → 降级", () => {
+    const r = applyProfile("lowCost", mk(100, "SOIC-8"));
+    assert.equal(r.downgrade, "NEEDS_VERIFICATION");
+  });
+  await t.test("inStockOnly 且无现货 → 降级", () => {
+    const ctx = mk(100, "SOIC-8", { market: { priceUSD100: 0.2, source: "distributor_api", stock: "缺货", stockQty: 0 } });
+    ctx.procurement = { inStockOnly: true };
+    const r = applyProfile("lowCost", ctx);
+    assert.equal(r.downgrade, "NEEDS_VERIFICATION");
+    assert.match(r.reason, /现货/);
+  });
+  await t.test("inStockOnly=false 时缺货仍可参与", () => {
+    const ctx = mk(100, "SOIC-8", { market: { priceUSD100: 0.2, source: "distributor_api", stock: "缺货", stockQty: 0 } });
+    ctx.procurement = { inStockOnly: false };
+    assert.equal(applyProfile("lowCost", ctx).downgrade, undefined);
   });
 });
 

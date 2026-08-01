@@ -1074,7 +1074,18 @@ function GraphicsPanel({d,pn}){
   const[unit,setUnit]=useState(1);
   const[loading,setLoading]=useState(!cached);
   const[pin,setPin]=useState(null);
-  const togglePin=v=>setPin(prev=>samePin(prev,v)?null:normPin(v));
+  // 点击焊盘时若该引脚不在当前显示单元，自动切到包含它的单元（LM358 点 pad5 应跳到 B 单元）
+  const togglePin=v=>{
+    const nv=normPin(v);
+    setPin(prev=>samePin(prev,nv)?null:nv);
+    if(ksym?.maxUnit>1&&nv){
+      const inCur=(ksym.pins||[]).some(p=>(!p.unit||p.unit===0||p.unit===unit)&&samePin(p.number,nv));
+      if(!inCur){
+        const target=(ksym.pins||[]).find(p=>samePin(p.number,nv)&&p.unit>0);
+        if(target)setUnit(target.unit);
+      }
+    }
+  };
   const[zoomed,setZoomed]=useState(null);
   const[srcSym,setSrcSym]=useState(cached?.srcSym??"");
   const[srcFp,setSrcFp]=useState(cached?.srcFp??"");
@@ -1250,28 +1261,36 @@ function GraphicsPanel({d,pn}){
 
   const dlSymbol=(<React.Fragment>
     {srcSym==="ezplm"&&d?.symbolUrl&&
-      <a href={proxyRes(d.symbolUrl)} target="_blank" rel="noreferrer" download style={DL_SM}>⬇ ezPLM 原始符号</a>}
+      <DownloadButton label="原始符号" filename={d.symbolFileName||`${pn}.kicad_sym`} source="ezplm" verified
+        href={proxyRes(d.symbolUrl)}/>}
     {srcSym==="kicad_official"&&extUrl.symbol&&
-      <a href={extUrl.symbol} target="_blank" rel="noreferrer" style={DL_SM}>🔗 官方符号库</a>}
-    {ksym&&<button onClick={()=>downloadText(`${pn}.kicad_sym`,exportKicadSym(ksym,symMeta()),"application/octet-stream")}
-      style={{...DL_SM,cursor:"pointer",borderColor:C.greenMid,background:C.greenLight,color:C.green}}
-      title="导出为 KiCad 7/8/9 通用格式，含来源标注">⬇ 导出 .kicad_sym</button>}
+      <DownloadButton label="官方符号" filename={`${pn}.kicad_sym`} source="kicad" verified href={extUrl.symbol}/>}
+    {ksym&&<DownloadButton label="导出 .kicad_sym" filename={`${pn}.kicad_sym`}
+      source={srcSym==="ezplm"||srcSym==="kicad_official"?"generated":"ai"}
+      verified={srcSym==="ezplm"||srcSym==="kicad_official"||srcSym==="pdf_datasheet"}
+      title="导出为 KiCad 7/8/9 通用格式，含来源标注"
+      onDownload={()=>downloadText(`${pn}.kicad_sym`,exportKicadSym(ksym,symMeta()),"application/octet-stream")}/>}
   </React.Fragment>);
 
   const dlFootprint=(<React.Fragment>
     {srcFp==="ezplm"&&d?.footprintFileUrl&&
-      <a href={proxyRes(d.footprintFileUrl)} target="_blank" rel="noreferrer" download style={DL_SM}>⬇ {d.footprintFileName||"ezPLM 封装"}</a>}
+      <DownloadButton label="原始封装" filename={d.footprintFileName||"footprint.kicad_mod"} source="ezplm" verified
+        href={proxyRes(d.footprintFileUrl)}/>}
     {srcFp==="kicad_official"&&extUrl.footprint&&
-      <a href={extUrl.footprint} target="_blank" rel="noreferrer" style={DL_SM}>🔗 官方封装库</a>}
-    {fpText&&<button onClick={()=>downloadText(`${(pkg||pn).replace(/[^\w.\-]/g,"_")}.kicad_mod`,fpText,"application/octet-stream")}
-      style={{...DL_SM,cursor:"pointer",borderColor:C.greenMid,background:C.greenLight,color:C.green}}
-      title={srcFp==="synth"?"此为依封装名推算生成的示意封装，不可直接用于生产":"导出当前显示的封装文件"}>
-      ⬇ 导出 .kicad_mod</button>}
+      <DownloadButton label="官方封装" filename={`${pkg||pn}.kicad_mod`} source="kicad" verified href={extUrl.footprint}/>}
+    {fpText&&<DownloadButton label="导出 .kicad_mod"
+      filename={`${(pkg||pn).replace(/[^\w.\-]/g,"_")}.kicad_mod`}
+      source={srcFp==="ezplm"||srcFp==="kicad_official"?"generated":"ai"}
+      verified={srcFp!=="synth"}
+      title={srcFp==="synth"?"依封装名推算生成的示意封装，不可直接用于生产":"导出当前显示的封装文件"}
+      onDownload={()=>downloadText(`${(pkg||pn).replace(/[^\w.\-]/g,"_")}.kicad_mod`,fpText,"application/octet-stream")}/>}
   </React.Fragment>);
 
   const dl3D=(<React.Fragment>
-    {d?.model3dUrl&&<a href={proxyRes(d.model3dUrl)} target="_blank" rel="noreferrer" download style={DL_SM}>⬇ {d.model3dFileName||"ezPLM STEP"}</a>}
-    {!d?.model3dUrl&&extUrl.model3d&&<a href={extUrl.model3d} target="_blank" rel="noreferrer" style={DL_SM}>⬇ 官方库 STEP</a>}
+    {d?.model3dUrl&&<DownloadButton label="STEP 模型" filename={d.model3dFileName||`${pn}.step`} source="ezplm" verified
+      href={proxyRes(d.model3dUrl)}/>}
+    {!d?.model3dUrl&&extUrl.model3d&&<DownloadButton label="STEP 模型" filename={`${pkg||pn}.step`} source="kicad" verified
+      href={extUrl.model3d}/>}
     {!d?.model3dUrl&&!extUrl.model3d&&<span style={{fontSize:10,color:C.textMute}}>无可下载的 3D 模型</span>}
   </React.Fragment>);
 
@@ -1343,6 +1362,34 @@ function GraphicsPanel({d,pn}){
         </div>
       </div>)}
   </div>);
+}
+
+/**
+ * 统一下载按钮：所有下载操作尺寸/间距/字号一致。
+ * 来源与风险通过 badge 表达，不用按钮颜色暗示（此前"生成文件"用绿底、"原始文件"用白底，
+ * 同一组操作视觉割裂，且用颜色传达语义不可靠）。
+ */
+function DownloadButton({label,filename,source,verified,href,onDownload,title}){
+  const BADGE={
+    ezplm:{t:"ezPLM 原始",c:"#1a6c4e",bg:"#e8f5ef",b:"#c2e5d3"},
+    kicad:{t:"KiCad 官方",c:"#1a6c4e",bg:"#e8f5ef",b:"#c2e5d3"},
+    generated:{t:"生成文件",c:"#b8860b",bg:"#fef9ed",b:"#f0dca0"},
+    ai:{t:"AI 生成 · 未验证",c:"#b8860b",bg:"#fef9ed",b:"#f0dca0"},
+  }[source]||null;
+  const base={display:"inline-flex",alignItems:"center",gap:6,height:32,padding:"0 12px",
+    borderRadius:7,border:"1px solid #d4e8dc",background:"#fff",color:"#1a2e23",
+    fontSize:12,fontWeight:600,textDecoration:"none",whiteSpace:"nowrap",cursor:"pointer",
+    fontFamily:"inherit",lineHeight:1};
+  const inner=(<React.Fragment>
+    <span aria-hidden="true">⬇</span>
+    <span>{label}</span>
+    {BADGE&&<span style={{fontSize:9,padding:"1px 5px",borderRadius:3,background:BADGE.bg,color:BADGE.c,border:`1px solid ${BADGE.b}`,fontWeight:600}}>{BADGE.t}</span>}
+    {source==="generated"||source==="ai"?<span style={{fontSize:9,color:"#b8860b"}}>NOT_FOR_PRODUCTION</span>:null}
+  </React.Fragment>);
+  const aria=`下载 ${filename||label}${verified===false?"（未验证）":""}`;
+  return href
+    ? <a href={href} target="_blank" rel="noreferrer" download={filename||undefined} style={base} aria-label={aria} title={title}>{inner}</a>
+    : <button onClick={onDownload} style={base} aria-label={aria} title={title}>{inner}</button>;
 }
 
 const DL_SM={padding:"5px 10px",borderRadius:6,border:"1px solid #d4e8dc",background:"#fff",color:"#4a6b58",fontSize:11,fontWeight:600,textDecoration:"none",whiteSpace:"nowrap",lineHeight:1.4};
@@ -1681,7 +1728,8 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
   const[mode,setMode]=useState("funcCompat");
   const[application,setApplication]=useState("generic");
   const[showVariants,setShowVariants]=useState(false);
-  const[orderSource,setOrderSource]=useState("default");   // default | scenario | user_override
+  const[orderSource,setOrderSource]=useState("default");
+  const[procurement,setProcurement]=useState({region:"CN",quantity:100,packaging:"any",currency:"USD",inStockOnly:true});   // default | scenario | user_override
   const[reorderNote,setReorderNote]=useState("");
   const[phase,setPhase]=useState("idle"); // idle|loading|done
   const[result,setResult]=useState(null);
@@ -1747,7 +1795,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
       const r=await fetch("/api/v2/recommend",{method:"POST",headers:{"Content-Type":"application/json"},
         signal:ctl.signal,
         body:JSON.stringify({partNumber:original.partNumber,mode,application,preferredManufacturers:mfrs,constraints,
-          priorityOrder:params.map(p=>p.id),orderSource,original:original._dataPath==="demo"?undefined:original})});
+          priorityOrder:params.map(p=>p.id),orderSource,procurement:mode==="lowCost"?procurement:undefined,original:original._dataPath==="demo"?undefined:original})});
       clearTimeout(timer);
       const ct=r.headers.get("content-type")||"";
       const d=ct.includes("json")?await r.json().catch(()=>null):null;
@@ -1913,6 +1961,41 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
         </div>}
       </div>
 
+      {mode==="lowCost"&&(
+      <div style={{borderRadius:12,border:`1.5px solid ${C.amber}55`,background:C.amberBg,padding:"14px 16px",marginBottom:14}}>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:4,color:"#854f0b"}}>🛒 采购条件</div>
+        <div style={{fontSize:11,color:"#854f0b",marginBottom:10}}>低成本排序只使用真实分销商报价；无真实报价的候选会被移入待核验，不参与成本排名</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          <label style={{fontSize:11,color:C.textSec}}>采购地区
+            <select value={procurement.region} onChange={e=>setProcurement({...procurement,region:e.target.value})}
+              style={{width:"100%",padding:"5px 8px",borderRadius:6,border:`1px solid ${C.border}`,fontSize:12,marginTop:3}}>
+              <option value="CN">中国大陆</option><option value="HK">中国香港</option>
+              <option value="US">美国</option><option value="EU">欧洲</option>
+            </select></label>
+          <label style={{fontSize:11,color:C.textSec}}>采购数量
+            <input type="number" min="1" value={procurement.quantity}
+              onChange={e=>setProcurement({...procurement,quantity:Math.max(1,parseInt(e.target.value)||1)})}
+              style={{width:"100%",padding:"5px 8px",borderRadius:6,border:`1px solid ${C.border}`,fontSize:12,marginTop:3}}/></label>
+          <label style={{fontSize:11,color:C.textSec}}>包装方式
+            <select value={procurement.packaging} onChange={e=>setProcurement({...procurement,packaging:e.target.value})}
+              style={{width:"100%",padding:"5px 8px",borderRadius:6,border:`1px solid ${C.border}`,fontSize:12,marginTop:3}}>
+              <option value="any">不限</option><option value="tape">卷带 Tape&Reel</option>
+              <option value="tube">管装 Tube</option><option value="tray">托盘 Tray</option>
+              <option value="cut">散装 Cut Tape</option>
+            </select></label>
+          <label style={{fontSize:11,color:C.textSec}}>币种
+            <select value={procurement.currency} onChange={e=>setProcurement({...procurement,currency:e.target.value})}
+              style={{width:"100%",padding:"5px 8px",borderRadius:6,border:`1px solid ${C.border}`,fontSize:12,marginTop:3}}>
+              <option value="USD">USD</option><option value="CNY">CNY</option><option value="EUR">EUR</option>
+            </select></label>
+        </div>
+        <label style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:C.textSec,marginTop:8,cursor:"pointer"}}>
+          <input type="checkbox" checked={procurement.inStockOnly}
+            onChange={e=>setProcurement({...procurement,inStockOnly:e.target.checked})}/>
+          仅显示有现货的候选（无库存数据的移入待核验）
+        </label>
+      </div>)}
+
       <div style={{borderRadius:12,border:`1.5px solid ${C.border}`,background:"#fff",padding:"14px 16px",marginBottom:14}}>
         <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>🔀 替代模式</div>
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
@@ -2040,7 +2123,7 @@ function App(){
       {page==="workbench"&&original&&<Workbench key={original.partNumber} original={original} demoNote={demoNote} onBack={()=>setPage("home")} onSwitchVariant={v=>analyze(v.pn)}/>}
     </main>
     <footer style={{textAlign:"center",padding:"14px",borderTop:`1px solid ${C.borderLight}`,fontSize:12,color:C.textMute,background:"#fff"}}>
-      AltPart Pro v6.2.0 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
+      AltPart Pro v6.3.0 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
     </footer>
   </React.Fragment>);
 }

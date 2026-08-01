@@ -7,7 +7,7 @@ function mockRes() {
   r.json = b => { r.body = b; return r; }; r.end = () => r;
   return r;
 }
-function load({ candidates = [], candParams = null, throwErr = null } = {}) {
+function load({ candidates = [], candParams = null, throwErr = null, authoritative = false } = {}) {
   // pipeline 以解构方式捕获 gemini 的函数引用，必须先设 mock 再重新加载 pipeline，
   // 否则拿到的是上一个用例遗留的引用（这曾让上游异常用例误判为通过）
   // 模块级缓存会跨用例污染：前一用例缓存的候选会让后一用例的 mock 根本不被调用
@@ -30,7 +30,7 @@ function load({ candidates = [], candParams = null, throwErr = null } = {}) {
     partNumber: pn, manufacturer: "Analog Devices", description: "VGA",
     parameters: candParams || { p1: { value: "QFN-16", source: "ai_search" },
       p2: { value: "48 dB", source: "ai_search" }, p3: { value: "-40 to 85 °C", source: "ai_search" } },
-    _source: "ai_search" });
+    _source: authoritative ? "ezplm" : "ai_search" });
   const m = require("../api/_lib/market");
   m.getMarketInfo = async pns => ({ parts: Object.fromEntries(pns.map(p => [p, { priceUSD1: 1, source: "ai_estimate" }])) });
   for (const mod of ["../api/_lib/pipeline", "../api/v2/recommend"])
@@ -58,15 +58,29 @@ test("P0：五种模式必须给出可解释结果，不得笼统失败", async 
     assert.match(JSON.stringify(res.body.error.details.eliminated), /非国产/);
   });
 
-  await t.test("功能兼容有候选 → 200 success", async () => {
-    const h = load({ candidates: ["AD8332ARQZ"] });
+  await t.test("功能兼容 + AI候选 → 200，但只进待核验区，不占正式 Top N", async () => {
+    const h = load({ candidates: ["AD8332ARQZ"] });   // mock 来源为 ai_search，非权威
     const res = mockRes();
     await h({ method: "POST", body: { partNumber: "AD8331ARQ", mode: "funcCompat" } }, res);
     assert.equal(res.code, 200);
     assert.equal(res.body.success, true);
-    assert.ok(res.body.recommendations.length > 0);
+    assert.equal(res.body.recommendations.length, 0, "AI 候选不得进入正式推荐");
+    assert.ok(res.body.pendingVerification.length > 0, "应进入待核验候选");
+    assert.equal(res.body.onlyPending, true);
+    assert.match(res.body.notice, /待核验/);
+    assert.equal(res.body.pendingVerification[0].replacementLevel.level, "NEEDS_VERIFICATION");
     assert.ok(res.body.requestId);
     assert.ok(Array.isArray(res.body.timings), "应返回阶段计时");
+  });
+
+  await t.test("功能兼容 + ezPLM权威候选 → 进入正式 Top N", async () => {
+    const h = load({ candidates: ["AD8332ARQZ"], authoritative: true });
+    const res = mockRes();
+    await h({ method: "POST", body: { partNumber: "AD8331ARQ", mode: "funcCompat" } }, res);
+    assert.equal(res.code, 200);
+    assert.ok(res.body.recommendations.length > 0, "权威候选应进入正式推荐");
+    assert.equal(res.body.recommendations[0].authoritative, true);
+    assert.ok(!res.body.onlyPending);
   });
 });
 

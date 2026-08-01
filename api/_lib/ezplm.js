@@ -7,6 +7,7 @@
 
 const { callEzplm } = require("../ezplm");
 const { cache } = require("./cache");
+const { resolveIdentity, identityCacheKey, guardResource, splitMpn } = require("./part-identity");
 
 /* ---------- 防御式取值（官方未给精确结构，兼容多形态） ---------- */
 const str = v => (typeof v === "string" && v.trim() ? v.trim() : undefined);
@@ -117,6 +118,7 @@ function mapEzplmPart(raw) {
     parameters,
     footprint, footprintSize: size,
     datasheetUrl: pdfFile?.url,
+    datasheetFileName: pdfFile?.fname || "",
     productUrl: str(raw.officialUrl),
     symbolUrl: symbolFile?.url || null,
     symbolFileName: symbolFile?.fname || "",
@@ -136,30 +138,38 @@ async function ezplmConfigured() {
   return !!process.env.EZPLM_API_KEY;
 }
 
-/** 按型号精确查询（本地库优先路径用） */
-async function queryLocalDB(partNumber) {
-  const ck = `ez:part:${partNumber.toLowerCase()}`;
-  const hit = cache.get(ck);
-  if (hit !== null && hit !== undefined) return hit || null;
+/**
+ * 按型号查询。**不做静默替换**：
+ * 线上曾出现输入 TL431 却返回 TL431-1、输入 LM358ADR 却混入 ST/LM258/LM2904 资源。
+ * 现在统一经 resolveIdentity 判定匹配类型，并把厂商与封装写进缓存键。
+ */
+async function queryLocalDB(partNumber, opts = {}) {
+  const probe = `ez:probe:${String(partNumber).toLowerCase()}`;
+  const cachedProbe = cache.get(probe);
+  if (cachedProbe !== null && cachedProbe !== undefined) return cachedProbe || null;
 
   if (await ezplmConfigured()) {
     const r = await callEzplm("parts", { keyword: partNumber, pageSize: 20 });
     if (r.ok && r.data.length) {
-      const norm = x => String(x).toUpperCase().replace(/[^A-Z0-9]/g, "");
-      const target = norm(partNumber);
-      // 精确匹配优先，其次前缀匹配
-      const exact = r.data.find(d => norm(str(d.mpn) ?? str(d.model) ?? "") === target);
-      const prefix = r.data.find(d => norm(str(d.mpn) ?? str(d.model) ?? "").startsWith(target));
-      const picked = exact || prefix;
-      if (picked) {
-        const mapped = mapEzplmPart(picked);
-        if (mapped.parameters.length) { cache.set(ck, mapped, 7 * 86400); return mapped; }
+      const mapped = r.data.map(mapEzplmPart);
+      const identity = resolveIdentity(partNumber, mapped, { sourceType: "ezplm" });
+
+      // 只有 exact / package_variant 才可当作"该型号的数据"；
+      // base_device / fuzzy 不得冒充，交由调用方让用户确认变体。
+      if (identity.matchType === "exact" && identity.record?.parameters?.length) {
+        const out = { ...identity.record, identity, _matchType: identity.matchType };
+        cache.set(identityCacheKey("ez:part", identity), out, 7 * 86400);
+        cache.set(probe, out, 7 * 86400);
+        return out;
       }
+      // 无 exact：返回候选集合供上层做变体确认，绝不替换用户输入
+      const out = { ambiguous: true, identity, candidates: mapped.slice(0, 10) };
+      cache.set(probe, out, 3600);
+      return opts.allowAmbiguous ? out : null;
     }
-    cache.set(ck, false, 3600);   // 记录未命中，避免反复打上游
+    cache.set(probe, false, 3600);
     return null;
   }
-
   return MOCK_LOCAL_DB[partNumber.toUpperCase()] || null;
 }
 
@@ -208,17 +218,34 @@ async function getReferenceDesigns(ezplmId, pageSize = 10) {
 /** 器件详情（含参考设计与可下载资源） */
 async function queryPartDetail(partNumber) {
   const base = await queryLocalDB(partNumber);
-  if (!base) return null;
+  if (!base || base.ambiguous) return null;
+  const identity = base.identity || resolveIdentity(partNumber, [base], { sourceType: "ezplm" });
+
+  /** 展示前逐个校验资源确属该器件（拦 LM2904BAIPWR.pdf / LM258DT.pdf 这类异物） */
+  const keep = (res, label) => {
+    if (!res?.url) return null;
+    const g = guardResource(identity, { ...res, manufacturer: base.manufacturer, partNumber: base.partNumber });
+    if (!g.ok) {
+      console.warn(`[ezplm] ${label} 被身份守卫拒绝: ${g.reason}`);
+      return { blocked: true, code: g.code, reason: g.reason };
+    }
+    return res;
+  };
   const referenceDesigns = await getReferenceDesigns(base.ezplmId);
   return {
     ...base,
     referenceDesigns,
+    identity,
     downloads: [
-      base.datasheetUrl && { type: "datasheet", label: "Datasheet (PDF)", url: base.datasheetUrl, fname: "" },
-      base.symbolUrl && { type: "symbol", label: "原理图符号", url: base.symbolUrl, fname: "" },
-      base.footprintFileUrl && { type: "footprint", label: `PCB 封装 (KiCad)`, url: base.footprintFileUrl, fname: base.footprintFileName },
-      base.model3dUrl && { type: "model3d", label: "3D 模型 (STEP)", url: base.model3dUrl, fname: base.model3dFileName },
-    ].filter(Boolean),
+      keep({ type: "datasheet", label: "Datasheet (PDF)", url: base.datasheetUrl, fname: base.datasheetFileName || "" }, "datasheet"),
+      keep({ type: "symbol", label: "原理图符号", url: base.symbolUrl, fname: base.symbolFileName || "" }, "symbol"),
+      keep({ type: "footprint", label: "PCB 封装 (KiCad)", url: base.footprintFileUrl, fname: base.footprintFileName }, "footprint"),
+      keep({ type: "model3d", label: "3D 模型 (STEP)", url: base.model3dUrl, fname: base.model3dFileName }, "model3d"),
+    ].filter(x => x && !x.blocked),
+    blockedResources: [
+      keep({ type: "datasheet", url: base.datasheetUrl, fname: base.datasheetFileName || "" }, "datasheet"),
+      keep({ type: "symbol", url: base.symbolUrl, fname: base.symbolFileName || "" }, "symbol"),
+    ].filter(x => x && x.blocked),
     suppliers: [],   // 由 /api/v2/market 提供实时价格库存
     inventory: null,
   };

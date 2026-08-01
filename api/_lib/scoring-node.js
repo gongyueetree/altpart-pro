@@ -135,18 +135,25 @@ function compareParam(origParam, candRaw, candMeta = {}) {
     case "higher_better":
     case "lower_better": {
       if (!comparable(a, b)) { out = textCompare(); break; }
-      const better = sem === "higher_better" ? b.canonicalTyp >= a.canonicalTyp : b.canonicalTyp <= a.canonicalTyp;
+      const higher = sem === "higher_better";
+      const better = higher ? b.canonicalTyp >= a.canonicalTyp : b.canonicalTyp <= a.canonicalTyp;
+      // 文案必须按"优/劣"表述，不能按"高/低"。
+      // 失调电压 0.3mV → 0.5mV 数值变大是更差，若写成"低于原型号"会被读成更小。
+      const worseWord = higher ? "偏低" : "偏高";
       if (better) {
         const improved = Math.abs(b.canonicalTyp - a.canonicalTyp) > Math.abs(a.canonicalTyp || 1) * 1e-9;
-        out = { score: 100, comment: improved ? "优于原型号" : "一致", known: true, better: improved };
+        out = { score: 100, comment: improved ? `优于原型号（${fmt(a)} → ${fmt(b)}）` : "与原型号一致",
+                known: true, better: improved, direction: higher ? "higher_is_better" : "lower_is_better" };
       } else {
         const denom = Math.abs(a.canonicalTyp) || 1;
-        const worse = Math.abs(b.canonicalTyp - a.canonicalTyp) / denom;   // 劣化比例
+        const worse = Math.abs(b.canonicalTyp - a.canonicalTyp) / denom;
         const tol = rule.tolerance || 0.15;
-        out = worse <= tol * 0.5 ? { score: 88, comment: "略低于原型号", known: true }
-            : worse <= tol       ? { score: 72, comment: "低于原型号但在容差内", known: true }
-            : worse <= tol * 2.5 ? { score: 45, comment: "明显低于原型号", known: true }
-            : { score: 15, comment: `不满足（${fmt(a)} → ${fmt(b)}）`, known: true };
+        const pct = (worse * 100).toFixed(0);
+        out = worse <= tol * 0.5 ? { score: 88, comment: `略${worseWord}，仍在容差内（${fmt(a)} → ${fmt(b)}）`, known: true }
+            : worse <= tol       ? { score: 72, comment: `${worseWord} ${pct}%，处于容差边缘`, known: true }
+            : worse <= tol * 2.5 ? { score: 45, comment: `明显劣于原型号（${worseWord} ${pct}%：${fmt(a)} → ${fmt(b)}）`, known: true }
+            : { score: 15, comment: `不满足要求（${worseWord} ${pct}%：${fmt(a)} → ${fmt(b)}）`, known: true };
+        out.direction = higher ? "higher_is_better" : "lower_is_better";
       }
       break;
     }
@@ -225,8 +232,13 @@ function calculateScore(originalParams, candidate, priorityOrder, constraints = 
         if (isHard) { needsVerification = true; verifyReasons.push(`硬约束参数「${origP.name}」缺失，无法验证`); }
         // 软偏好缺失只影响证据覆盖率（下方 covKnownW 自然不计入）
       } else {
-        const pass = checkConstraint(con, cv?.value, origP.unit);
-        if (!pass && isHard) { rejected = true; rejectReason = `不满足硬约束：${origP.name}`; }
+        const pass = checkConstraint(con, cv?.value, origP.unit, { compareScore: res.score });
+        if (!pass && isHard) {
+          rejected = true;
+          rejectReason = con.scenario
+            ? `不满足「${con.scenario}」场景硬约束：${origP.name}（${res.comment}）`
+            : `不满足硬约束：${origP.name}`;
+        }
         if (!pass && !isHard) { res.score = Math.max(0, (res.score ?? 60) - 25); res.comment = "不满足偏好"; }
       }
     }
@@ -290,9 +302,16 @@ function calculateScore(originalParams, candidate, priorityOrder, constraints = 
  *   未指定时：候选值本身是范围 → cover；是单值 → within
  * @returns true 满足 / false 违反 / null 无法判定（值缺失）
  */
-function checkConstraint(con, rawValue, unitHint) {
+function checkConstraint(con, rawValue, unitHint, ctx = {}) {
   const v = toQuantityIR(rawValue, unitHint);
   if (!v.known) return null;
+
+  // 场景硬约束：不得劣于原型号（方向由比较语义给出，无需用户填区间）
+  if (con.notWorseThanOriginal) {
+    const score = ctx.compareScore;
+    if (score == null) return null;      // 无法判定
+    return score >= 70;                  // 优于/一致/容差内视为满足
+  }
 
   if (Array.isArray(con.options) && con.options.length) {
     const s = String(v.text ?? v.rawValue ?? "").toLowerCase();

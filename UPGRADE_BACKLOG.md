@@ -128,3 +128,36 @@
 - LM358ADR 端到端身份一致性（需真实上游数据）
 
 建议部署后运行 `npm run verify:live <url>` 覆盖后端部分。
+
+---
+
+# v6.3.0 轮次（八项指定修复）
+
+## ✅ 完成
+
+| # | 项 | 实现 | 测试 |
+|---|---|---|---|
+| 1 | LM358ADR 串料 | 身份对象接入 `_lib/ezplm.js` 全链路；无 exact 匹配不返回替代型号；`guardResource` 拦截异厂/异器件资源；缓存键含 canonical 厂商+封装 | `identity-integration.test.js` 12 例 |
+| 2 | 引脚双向高亮 | `normPin/samePin` 抽为共享模块；点焊盘自动切换到含该引脚的单元；再点取消；高对比度光晕；`role=button`+键盘 | `pin-linkage.test.js` 33 例 |
+| 3 | 评分解释 | `lower_better` 文案改为「偏高/偏低 + 优/劣」；0.3mV→0.5mV 显示"明显劣于原型号（偏高 67%）"，不再说"低于" | `scoring.test.js` |
+| 4 | 错误展示 | 前端逐字段读 `error.code/message/requestId/retryable`；10 个业务码中文映射；HTTP+Content-Type 校验 | `recommend-contract.test.js` |
+| 5 | 未验证候选隔离 | `isAuthoritative()`（仅 ezPLM/分销商 exact）；非权威进 `pendingVerification`，不占正式 Top N | 2 例 |
+| 6 | 低成本采购条件 | 前端地区/数量/包装/币种/仅现货；后端只认 `source==="distributor_api"`；按真实价格升序；修复"行情在门槛判定后才附加"的顺序缺陷 | `rule-profiles.test.js` 5 例 |
+| 7 | 场景硬约束 | `scenarioHardParams` 合并进 `effectiveConstraints` 真正参与过滤；用户约束优先不被覆盖 | `scenario-constraints.test.js` 6 例 |
+| 8 | 下载按钮统一 | 共享 `DownloadButton`（统一高度 32/padding/字号）；来源用 badge 而非颜色区分；生成文件标 `NOT_FOR_PRODUCTION`；MD/CSV 同组件 | — |
+
+## ❌ 仍未完成
+
+- **Playwright E2E**（§17.1 的 19 项）：沙箱无浏览器，引脚高亮/下载事件只有逻辑层测试
+- **base device 去重**（VCA2615Y/2K5 系列占满 Top3）
+- **`authoritativeEvidenceCoverage` 与 `fieldCoverage` 分离**
+- **Mouser「交期 441 天」字段核查**：需真实响应样本
+- **AD8331 官方 PDF 证据实体**（页码/表格区域/hash）
+- **前端构建时编译与模块拆分**、a11y 全面整改
+- **Golden Set fixtures**
+- 变体确认页未接入 `ambiguous` 返回（ezPLM 已返回候选集合，前端尚未消费）
+
+## 🔒 未验证
+
+沙箱无密钥、网络不通上游、无浏览器。以下需部署后验证：
+五种模式真实表现、LM358ADR 线上身份一致性、引脚高亮 DOM、四类 Blob 下载、低成本真实报价排序。

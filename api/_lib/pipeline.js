@@ -2,7 +2,7 @@
 // 流程: 本地库优先 → AI推荐10个 → 本地库校验 → 算法评分 → 淘汰差异大的 → 输出Top5
 
 const { queryLocalDB, queryLocalDBBatch, searchParts } = require("./ezplm");
-const { applyScenarioPriority, getApplicationHint } = require("./applications");
+const { applyScenarioPriority, getApplicationHint, scenarioHardParams } = require("./applications");
 const { applyProfile, PROFILES } = require("./rule-profiles");
 const { resolveIdentity, splitMpn } = require("./part-identity");
 const { getDistributorPart } = require("./distributor");
@@ -12,6 +12,18 @@ const { cache } = require("./cache");
 
 // 淘汰阈值: 综合分低于此值的候选直接淘汰
 const ELIMINATION_THRESHOLD = 40;
+
+/**
+ * 候选是否有权威来源证明其存在。
+ * AI 生成的型号名不算证据 —— 线上曾出现 AI 编造型号进入 Top3。
+ * 权威 = ezPLM 收录 或 分销商 exact MPN 命中。
+ */
+function isAuthoritative(cand) {
+  if (!cand) return false;
+  if (cand._source === "ezplm") return true;
+  if (/^(digikey|mouser)/.test(cand._source || "")) return cand.exactMatch !== false;
+  return false;
+}
 
 /**
  * 虚构型号识别：AI 自述"不存在/虚构"，或参数几乎全为 N/A。
@@ -211,7 +223,7 @@ async function resolveOriginalPart(partNumber, onProgress) {
 /**
  * Step 2-4: 完整推荐流程
  */
-async function runPipeline({ partNumber, mode, scenario, application = "generic", preferredManufacturers = [], constraints = {}, priorityOrder, originalData, onProgress }) {
+async function runPipeline({ partNumber, mode, scenario, application = "generic", preferredManufacturers = [], constraints = {}, priorityOrder, originalData, procurement, onProgress }) {
   const startTime = Date.now();
   const stats = { localDbHits: 0, apiHits: 0, aiLookups: 0 };
 
@@ -222,6 +234,21 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   const params = original.parameters;
   const isNAv = v => v === undefined || v === null || /^n\/?a$/i.test(String(v).trim());
   const usable = params.filter(p => !isNAv(p.value));
+
+  // ── 场景硬约束真正生效 ──
+  // 此前 application 只影响提示词与排序，"电池场景要求低 Iq" 之类从未进入过滤。
+  const scenarioHardIds = application && application !== "generic"
+    ? scenarioHardParams(usable, application) : [];
+  const effectiveConstraints = { ...constraints };
+  const scenarioApplied = [];
+  for (const pid of scenarioHardIds) {
+    if (effectiveConstraints[pid]) continue;              // 用户显式约束优先，不覆盖
+    const p = usable.find(x => x.id === pid);
+    if (!p) continue;
+    // 场景硬约束语义：候选在该参数上不得劣于原型号（由比较语义决定方向）
+    effectiveConstraints[pid] = { constraintType: "hard", scenario: application, notWorseThanOriginal: true };
+    scenarioApplied.push({ paramId: pid, paramName: p.name, application });
+  }
   const order = priorityOrder || (application && application !== "generic"
     ? applyScenarioPriority(usable, application)
     : usable.map(p => p.id));
@@ -351,6 +378,18 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     }
   }
 
+  // ─── Step 3.6: 低成本模式需在门槛判定前拿到真实报价 ───
+  // 此前行情在 pipeline 返回后才附加，导致低成本门槛读到 undefined，全部候选被误降级。
+  if (mode === "lowCost" && fetchResults.length) {
+    try {
+      onProgress?.("正在获取分销商真实报价...");
+      const { getMarketInfo } = require("./market");
+      const mk = await getMarketInfo([partNumber, ...fetchResults.map(c => c.partNumber)].slice(0, 8));
+      for (const c of fetchResults) c.market = mk.parts?.[c.partNumber] || null;
+      original._market = mk.parts?.[partNumber] || null;
+    } catch (e) { console.warn("[Pipeline] 低成本报价获取失败:", e.message); }
+  }
+
   // ─── Step 4: 算法评分 + 淘汰 + 排序 ───
   onProgress?.("正在计算匹配评分并筛选...");
   const { calculateScore } = require("./scoring-node");
@@ -362,7 +401,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   ];
 
   for (const cand of fetchResults) {
-    const result = calculateScore(params, cand, order, constraints);
+    const result = calculateScore(params, cand, order, effectiveConstraints);
 
     // 功能类别不符 → 直接淘汰（替代料的前提是同类器件）
     if (cand._categoryMismatch) {
@@ -382,7 +421,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     }
 
     // ── 替代模式确定性门槛（此前仅靠提示词，无程序化约束）──
-    const gate = applyProfile(mode, { original, candidate: cand, scoreResult: result });
+    const gate = applyProfile(mode, { original, candidate: cand, scoreResult: result, procurement });
     if (!gate.pass) {
       eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: gate.reason });
       continue;
@@ -400,6 +439,8 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       partNumber: cand.partNumber, manufacturer: cand.manufacturer, description: cand.description,
       internalPN: cand.internalPN || "", inPLM: cand._source === "ezplm", approved: cand.approved || false,
       isPreferred, overallScore: result.overallScore,
+      authoritative: isAuthoritative(cand),
+      market: cand.market || null,
       technical: result.technical, evidenceCoverage: result.evidenceCoverage,
       sourceConfidence: result.sourceConfidence, confidence: result.confidence,
       pinVerified: result.pinVerified,
@@ -414,7 +455,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     lowScored.sort((a, b) => b.result.overallScore - a.result.overallScore);
     for (const { cand, result } of lowScored.slice(0, 3)) {
       // ── 替代模式确定性门槛（此前仅靠提示词，无程序化约束）──
-    const gate = applyProfile(mode, { original, candidate: cand, scoreResult: result });
+    const gate = applyProfile(mode, { original, candidate: cand, scoreResult: result, procurement });
     if (!gate.pass) {
       eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: gate.reason });
       continue;
@@ -431,6 +472,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
         partNumber: cand.partNumber, manufacturer: cand.manufacturer, description: cand.description,
         internalPN: cand.internalPN || "", inPLM: cand._source === "ezplm", approved: cand.approved || false,
         isPreferred, overallScore: result.overallScore,
+        authoritative: isAuthoritative(cand),
         technical: result.technical, evidenceCoverage: result.evidenceCoverage,
         sourceConfidence: result.sourceConfidence, confidence: result.confidence,
         pinVerified: result.pinVerified, _lowConfidence: true,
@@ -446,6 +488,33 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     for (const { cand, result } of lowScored) {
       eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: `综合可信度过低 (${result.overallScore}分 < ${ELIMINATION_THRESHOLD}分)` });
     }
+  }
+
+  // 低成本模式：有真实报价者按价格升序，其余按可信度
+  if (mode === "lowCost") {
+    scored.sort((a, b) => {
+      const pa = a.market?.source === "distributor_api" ? (a.market.priceUSD100 ?? a.market.priceUSD1) : null;
+      const pb = b.market?.source === "distributor_api" ? (b.market.priceUSD100 ?? b.market.priceUSD1) : null;
+      if (pa != null && pb != null) return pa - pb;
+      if (pa != null) return -1;
+      if (pb != null) return 1;
+      return b.confidence - a.confidence;
+    });
+    return {
+      pipeline: { dataPath: original._dataPath, candidatesRequested: AI_CANDIDATE_COUNT,
+        candidatesReceived: candidatePNs.length, candidatesVerified: fetchResults.length,
+        candidatesEliminated: eliminated.length, finalCount: Math.min(scored.length, FINAL_RESULT_COUNT),
+        localDbHits: stats.localDbHits, aiLookups: stats.aiLookups,
+        executionTimeMs: Date.now() - startTime, application, mode,
+        modeNote: PROFILES[mode]?.note || "", scenarioConstraints: scenarioApplied,
+        sortedBy: "real_distributor_price" },
+      original,
+      recommendations: scored.filter(x => x.authoritative).slice(0, FINAL_RESULT_COUNT),
+      pendingVerification: scored.filter(x => !x.authoritative).slice(0, FINAL_RESULT_COUNT).map(x => ({
+        ...x, pendingReason: "该型号未获权威来源确认，参数来自 AI，需人工核对",
+        replacementLevel: { level: "NEEDS_VERIFICATION", label: "待核验", color: "#8a8a8a", desc: "无权威来源确认" } })),
+      eliminated,
+    };
   }
 
   // 排序: 综合分优先，分差<=3 时优选厂商靠前
@@ -471,9 +540,17 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       executionTimeMs: Date.now() - startTime,
       application,
       mode, modeNote: PROFILES[mode]?.note || "",
+      scenarioConstraints: scenarioApplied,
     },
     original,
-    recommendations: scored.slice(0, FINAL_RESULT_COUNT),
+    // 未经权威来源验证的候选不得占据正式 Top N，单列"待核验候选"
+    recommendations: scored.filter(x => x.authoritative).slice(0, FINAL_RESULT_COUNT),
+    pendingVerification: scored.filter(x => !x.authoritative).slice(0, FINAL_RESULT_COUNT).map(x => ({
+      ...x,
+      pendingReason: "该型号未获 ezPLM 或分销商精确匹配确认，参数来自 AI，需人工核对 datasheet 后方可采用",
+      replacementLevel: { level: "NEEDS_VERIFICATION", label: "待核验", color: "#8a8a8a",
+        desc: "无权威来源确认该型号，不进入正式推荐" },
+    })),
     eliminated,
   };
 }

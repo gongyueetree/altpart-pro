@@ -133,12 +133,18 @@ function applyProfile(mode, ctx) {
   if (p.requireDomestic && !isDomestic(candidate.manufacturer, candidate.description))
     return { pass: false, reason: `国产替代模式：${candidate.manufacturer || "未知厂商"} 非国产品牌` };
 
-  // 低成本要求价格可知
+  // 低成本：必须有**真实分销商**报价，AI 估价不得参与正式排名
   if (p.requirePriceKnown) {
-    const price = candidate.market?.priceUSD100 ?? candidate.market?.priceUSD1;
-    const pp = findParam(/价格|price/i);
-    if (price == null && !pp?.score?.known)
-      return { pass: true, downgrade: "NEEDS_VERIFICATION", reason: "低成本模式：无价格数据，无法比较成本" };
+    const m = candidate.market;
+    const real = m && m.source === "distributor_api";
+    if (!real)
+      return { pass: true, downgrade: "NEEDS_VERIFICATION",
+        reason: m?.source === "ai_estimate"
+          ? "低成本模式：仅有 AI 估价，无真实分销商报价，不参与成本排名"
+          : "低成本模式：无价格数据，无法比较成本" };
+    const proc = ctx.procurement;
+    if (proc?.inStockOnly && !(m.stockQty > 0 || /有货|充足/.test(m.stock || "")))
+      return { pass: true, downgrade: "NEEDS_VERIFICATION", reason: "低成本模式：该候选当前无现货" };
   }
 
   // 证据覆盖率下限

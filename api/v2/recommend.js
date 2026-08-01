@@ -50,7 +50,8 @@ module.exports = withCors(async (req, res) => {
                      eliminated: result.eliminated?.length || 0 });
 
     // ── 业务级"无候选"：不是系统失败，要给出稳定 code 与原因 ──
-    if (!result.recommendations?.length) {
+    // 正式候选与待核验候选都为空，才算真正无结果
+    if (!result.recommendations?.length && !result.pendingVerification?.length) {
       const elim = result.eliminated || [];
       const pinBlocked = elim.filter(e => /引脚|pin/i.test(e.reason || "")).length;
       const code = mode === "pin2pin" && pinBlocked > 0 ? "PIN_EVIDENCE_MISSING" : "NO_VERIFIED_CANDIDATES";
@@ -65,6 +66,11 @@ module.exports = withCors(async (req, res) => {
             eliminated: elim.slice(0, 20),
             pipeline: result.pipeline,
           } });
+    }
+
+    if (!result.recommendations?.length && result.pendingVerification?.length) {
+      result.onlyPending = true;
+      result.notice = `未找到有权威来源支撑的候选；以下 ${result.pendingVerification.length} 个为待核验候选，需人工核对 datasheet`;
     }
 
     // 附加市场行情与成本差异（失败不影响推荐主体）
