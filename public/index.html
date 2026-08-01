@@ -130,6 +130,177 @@ function SourceTag({source,sourceLabel}){
   return <span style={{fontSize:10,padding:"1px 5px",borderRadius:3,background:bg,color,border:`1px solid ${color}40`}}>📎 {sourceLabel||source} {isAI?"⚠":"✓"}</span>;
 }
 
+// ═══ 封装几何解析与 SVG 预览生成 ═══
+// 有 ezPLM 图则用图；否则按封装名程序化生成，保证任何器件都有预览
+function parsePackage(name){
+  if(!name)return null;
+  const s=String(name).toUpperCase().replace(/\s/g,"");
+  // 前置引脚数写法：10-LEAD MSOP / 20-PIN TSSOP / 8PIN SOIC
+  const lead=s.match(/(\d+)-?(?:LEAD|PIN|P\b)/);
+  const num=(re)=>{const m=s.match(re);return m?parseInt(m[1]):null;};
+  const pinOf=(fallback)=>lead?parseInt(lead[1]):fallback;
+  // 片式元件 0402/0603/0805/1206
+  const chip=s.match(/\b(0201|0402|0603|0805|1206|1210|2010|2512)\b/);
+  if(chip){const sizes={"0201":[0.6,0.3],"0402":[1.0,0.5],"0603":[1.6,0.8],"0805":[2.0,1.25],"1206":[3.2,1.6],"1210":[3.2,2.5],"2010":[5.0,2.5],"2512":[6.3,3.2]};
+    const[L,W]=sizes[chip[1]];return{type:"chip",pins:2,bodyW:L,bodyH:W,label:chip[1]};}
+  // QFN/DFN 四边或两边
+  if(/QFN|DFN|VQFN|WQFN/.test(s)){const n=num(/(?:QFN|DFN)-?(\d+)/)||pinOf(null)||num(/-(\d+)/)||16;
+    const sz=s.match(/(\d+(?:\.\d+)?)X(\d+(?:\.\d+)?)/);
+    return{type:"qfn",pins:n,bodyW:sz?parseFloat(sz[1]):3,bodyH:sz?parseFloat(sz[2]):3,hasEP:true,label:name};}
+  // QFP/LQFP/TQFP 四边引脚
+  if(/QFP/.test(s)){const n=num(/QFP-?(\d+)/)||pinOf(null)||48;return{type:"qfp",pins:n,bodyW:7,bodyH:7,label:name};}
+  // SOIC/SOP/SSOP/TSSOP/MSOP 两边
+  if(/SOIC|SOP|SSOP|TSSOP|MSOP|VSSOP|SO-/.test(s)){const n=num(/(?:SOIC|SOP|SSOP|TSSOP|MSOP|VSSOP)-?(\d+)/)||pinOf(null)||8;
+    return{type:"soic",pins:n,bodyW:n<=8?4:n<=16?6:8,bodyH:n<=8?5:n<=16?6:8,label:name};}
+  // SOT-23 系列
+  if(/SOT-?23|SOT-?89|SOT-?223|TSOT/.test(s)){const n=num(/-(\d+)$/)||pinOf(null)||3;
+    return{type:"sot",pins:n,bodyW:2.9,bodyH:1.6,label:name};}
+  // DIP
+  if(/DIP|PDIP/.test(s)){const n=num(/(?:DIP)-?(\d+)/)||pinOf(null)||8;return{type:"dip",pins:n,bodyW:7,bodyH:n*1.27,label:name};}
+  // BGA
+  if(/BGA/.test(s)){const n=num(/BGA-?(\d+)/)||pinOf(null)||64;return{type:"bga",pins:n,bodyW:8,bodyH:8,label:name};}
+  return{type:"generic",pins:pinOf(null)||num(/-(\d+)/)||8,bodyW:5,bodyH:5,label:name};
+}
+
+function FootprintSVG({pkg}){
+  const g=parsePackage(pkg);
+  if(!g)return <EmptyPreview text="无封装信息"/>;
+  const W=320,H=260,cx=W/2,cy=H/2,PAD="#c9a227",BODY="#1e3a2f",SILK="#8fd6b4";
+  const el=[];const scale=Math.min(120/Math.max(g.bodyW,1),120/Math.max(g.bodyH,1))*1.4;
+  const bw=g.bodyW*scale,bh=g.bodyH*scale;
+
+  if(g.type==="chip"){
+    const pw=bw*0.3;
+    el.push(<rect key="b" x={cx-bw/2} y={cy-bh/2} width={bw} height={bh} fill={BODY} rx={1}/>);
+    el.push(<rect key="p1" x={cx-bw/2-pw*0.6} y={cy-bh/2} width={pw} height={bh} fill={PAD} rx={1}/>);
+    el.push(<rect key="p2" x={cx+bw/2-pw*0.4} y={cy-bh/2} width={pw} height={bh} fill={PAD} rx={1}/>);
+  } else if(g.type==="soic"||g.type==="dip"||g.type==="sot"){
+    const per=Math.ceil(g.pins/2),pitch=bh/(per+0.5),pw=bw*0.35,ph=Math.max(4,pitch*0.5);
+    el.push(<rect key="b" x={cx-bw/2} y={cy-bh/2} width={bw} height={bh} fill={BODY} rx={2}/>);
+    el.push(<circle key="d" cx={cx-bw/2+9} cy={cy-bh/2+9} r={3} fill={SILK}/>);
+    for(let i=0;i<per;i++){const y=cy-bh/2+pitch*(i+0.6);
+      el.push(<rect key={`l${i}`} x={cx-bw/2-pw} y={y} width={pw} height={ph} fill={PAD} rx={1}/>);
+      if(i+per<g.pins||g.pins%2===0)el.push(<rect key={`r${i}`} x={cx+bw/2} y={y} width={pw} height={ph} fill={PAD} rx={1}/>);}
+  } else if(g.type==="qfn"||g.type==="qfp"){
+    const per=Math.ceil(g.pins/4),pitch=bw/(per+0.5);
+    const pl=g.type==="qfn"?bw*0.12:bw*0.22,pw2=Math.max(3,pitch*0.5);
+    el.push(<rect key="b" x={cx-bw/2} y={cy-bh/2} width={bw} height={bh} fill={BODY} rx={2}/>);
+    if(g.hasEP)el.push(<rect key="ep" x={cx-bw*0.28} y={cy-bh*0.28} width={bw*0.56} height={bh*0.56} fill={PAD} rx={2} opacity={0.85}/>);
+    el.push(<circle key="d" cx={cx-bw/2+10} cy={cy-bh/2+10} r={3.5} fill={SILK}/>);
+    for(let i=0;i<per;i++){
+      const off=-bw/2+pitch*(i+0.75);
+      el.push(<rect key={`b${i}`} x={cx+off-pw2/2} y={cy+bh/2-(g.type==="qfn"?pl:0)} width={pw2} height={pl} fill={PAD} rx={1}/>);
+      el.push(<rect key={`t${i}`} x={cx+off-pw2/2} y={cy-bh/2-(g.type==="qfn"?0:pl)} width={pw2} height={pl} fill={PAD} rx={1}/>);
+      el.push(<rect key={`l${i}`} x={cx-bw/2-(g.type==="qfn"?0:pl)} y={cy+off-pw2/2} width={pl} height={pw2} fill={PAD} rx={1}/>);
+      el.push(<rect key={`r${i}`} x={cx+bw/2-(g.type==="qfn"?pl:0)} y={cy+off-pw2/2} width={pl} height={pw2} fill={PAD} rx={1}/>);}
+  } else if(g.type==="bga"){
+    const n=Math.ceil(Math.sqrt(g.pins)),pitch=bw/n;
+    el.push(<rect key="b" x={cx-bw/2} y={cy-bh/2} width={bw} height={bh} fill={BODY} rx={2}/>);
+    for(let r=0;r<n;r++)for(let c=0;c<n;c++)
+      el.push(<circle key={`${r}-${c}`} cx={cx-bw/2+pitch*(c+0.5)} cy={cy-bh/2+pitch*(r+0.5)} r={Math.max(2,pitch*0.3)} fill={PAD}/>);
+  } else {
+    el.push(<rect key="b" x={cx-bw/2} y={cy-bh/2} width={bw} height={bh} fill={BODY} rx={2}/>);
+  }
+  return(<div style={{textAlign:"center"}}>
+    <svg width={W} height={H} style={{background:"#0f2419",borderRadius:8}}>
+      {el}
+      <text x={cx} y={28} textAnchor="middle" fill={SILK} fontSize={13} fontFamily="'DM Mono',monospace">{g.label}</text>
+      <text x={cx} y={H-16} textAnchor="middle" fill="#5a8a72" fontSize={11} fontFamily="'DM Mono',monospace">{g.pins} pins{g.bodyW?` · ${g.bodyW}×${g.bodyH}mm`:""}</text>
+    </svg>
+    <div style={{fontSize:11,color:C.textMute,marginTop:8}}>⚠ 程序化生成的封装示意图（依据封装名推算），非精确制造数据；请以 datasheet 为准</div>
+  </div>);
+}
+
+function SymbolSVG({pkg,partNumber,category}){
+  const g=parsePackage(pkg)||{pins:8};
+  const per=Math.max(1,Math.ceil(g.pins/2)),W=320,H=Math.max(200,per*26+70);
+  const bw=150,bh=per*26,cx=W/2,top=45;
+  const el=[];
+  el.push(<rect key="b" x={cx-bw/2} y={top} width={bw} height={bh} fill="none" stroke={C.green} strokeWidth={2}/>);
+  for(let i=0;i<per;i++){const y=top+13+i*26;
+    el.push(<line key={`ll${i}`} x1={cx-bw/2-28} y1={y} x2={cx-bw/2} y2={y} stroke={C.green} strokeWidth={1.5}/>);
+    el.push(<text key={`ln${i}`} x={cx-bw/2-32} y={y+4} textAnchor="end" fontSize={10} fill={C.textMute} fontFamily="'DM Mono',monospace">{i+1}</text>);
+    const rp=g.pins-i;
+    if(rp>per){
+      el.push(<line key={`rl${i}`} x1={cx+bw/2} y1={y} x2={cx+bw/2+28} y2={y} stroke={C.green} strokeWidth={1.5}/>);
+      el.push(<text key={`rn${i}`} x={cx+bw/2+32} y={y+4} fontSize={10} fill={C.textMute} fontFamily="'DM Mono',monospace">{rp}</text>);}}
+  return(<div style={{textAlign:"center"}}>
+    <svg width={W} height={H} style={{background:"#fff",borderRadius:8,border:`1px solid ${C.borderLight}`}}>
+      {el}
+      <text x={cx} y={top+bh/2} textAnchor="middle" fontSize={12} fontWeight="600" fill={C.green} fontFamily="'DM Mono',monospace">{partNumber}</text>
+      <text x={cx} y={26} textAnchor="middle" fontSize={11} fill={C.textMute}>{category||"器件符号"}</text>
+    </svg>
+    <div style={{fontSize:11,color:C.textMute,marginTop:8}}>⚠ 通用示意符号（按引脚数生成），引脚定义需查 datasheet</div>
+  </div>);
+}
+
+function Model3DSVG({pkg}){
+  const g=parsePackage(pkg);
+  if(!g)return <EmptyPreview text="无封装信息"/>;
+  const W=320,H=240,cx=W/2,cy=H/2+10;
+  const s=Math.min(90/Math.max(g.bodyW,1),90/Math.max(g.bodyH,1))*1.3;
+  const w=g.bodyW*s,d=g.bodyH*s,h=Math.max(14,w*0.18);
+  const ox=d*0.5,oy=d*0.28;
+  const top=`${cx-w/2},${cy-h} ${cx-w/2+ox},${cy-h-oy} ${cx+w/2+ox},${cy-h-oy} ${cx+w/2},${cy-h}`;
+  const right=`${cx+w/2},${cy-h} ${cx+w/2+ox},${cy-h-oy} ${cx+w/2+ox},${cy-oy} ${cx+w/2},${cy}`;
+  return(<div style={{textAlign:"center"}}>
+    <svg width={W} height={H} style={{background:"linear-gradient(160deg,#f7faf8,#e8f0ec)",borderRadius:8,border:`1px solid ${C.borderLight}`}}>
+      <ellipse cx={cx+ox*0.5} cy={cy+8} rx={w*0.62} ry={8} fill="#00000018"/>
+      <rect x={cx-w/2} y={cy-h} width={w} height={h} fill="#2c3e35"/>
+      <polygon points={top} fill="#3d5449"/>
+      <polygon points={right} fill="#1f2d26"/>
+      <circle cx={cx-w/2+11} cy={cy-h/2} r={3} fill="#8fd6b4"/>
+      <text x={cx+ox*0.5} y={H-14} textAnchor="middle" fontSize={11} fill={C.textMute} fontFamily="'DM Mono',monospace">{g.label} · {g.bodyW}×{g.bodyH}mm</text>
+    </svg>
+    <div style={{fontSize:11,color:C.textMute,marginTop:8}}>⚠ 按封装尺寸生成的立体示意图，非精确 STEP 模型</div>
+  </div>);
+}
+
+function EmptyPreview({text}){
+  return<div style={{padding:"50px",textAlign:"center",color:C.textMute,background:C.bgSoft,borderRadius:8}}>
+    <div style={{fontSize:32,marginBottom:8}}>📐</div><div style={{fontSize:13}}>{text}</div></div>;
+}
+
+const isImg=u=>u&&/\.(png|jpe?g|svg|gif|webp)(\?|$)/i.test(u);
+
+// ═══ 图形预览面板：符号 / 封装 / 3D ═══
+function GraphicsPanel({d,pn}){
+  const[g,setG]=useState("footprint");
+  const pkg=d?.footprint||(d?.parameters||[]).find(p=>/封装|package/i.test(p.name))?.value;
+  const urls={symbol:d?.symbolUrl,footprint:d?.footprintUrl,model3d:d?.model3dUrl};
+  const cur=urls[g==="model3d"?"model3d":g];
+  const dl=(d?.downloads||[]).find(f=>f.type===(g==="model3d"?"model3d":g));
+
+  return(<div>
+    <div style={{display:"flex",gap:6,marginBottom:14,justifyContent:"center"}}>
+      {[["symbol","🔣 原理图符号"],["footprint","📐 PCB 封装"],["model3d","🧊 3D 模型"]].map(([k,l])=>(
+        <button key={k} onClick={()=>setG(k)}
+          style={{padding:"7px 16px",borderRadius:7,borderWidth:1.5,borderStyle:"solid",
+            borderColor:g===k?C.green:C.border,background:g===k?C.greenLight:"#fff",
+            color:g===k?C.green:C.textSec,fontSize:13,fontWeight:g===k?600:400,cursor:"pointer"}}>{l}</button>))}
+    </div>
+
+    <div style={{display:"flex",justifyContent:"center",marginBottom:12}}>
+      {isImg(cur)
+        ? <div style={{textAlign:"center"}}>
+            <img src={cur} alt={g} style={{maxWidth:"100%",maxHeight:280,borderRadius:8,border:`1px solid ${C.borderLight}`,background:"#fff"}}/>
+            <div style={{fontSize:11,color:C.green,marginTop:8}}>✓ 来自 ezPLM 元器件库</div>
+          </div>
+        : g==="symbol" ? <SymbolSVG pkg={pkg} partNumber={pn} category={d?.category}/>
+        : g==="footprint" ? <FootprintSVG pkg={pkg}/>
+        : <Model3DSVG pkg={pkg}/>}
+    </div>
+
+    {(cur||dl)&&(<div style={{display:"flex",justifyContent:"center",gap:8}}>
+      <a href={dl?.url||cur} target="_blank" rel="noreferrer"
+        style={{padding:"9px 20px",borderRadius:8,background:C.green,color:"#fff",fontSize:13,fontWeight:600,textDecoration:"none"}}>
+        ⬇ 下载{g==="symbol"?"原理图符号":g==="footprint"?"PCB封装":"3D模型(STEP)"}
+      </a>
+    </div>)}
+    {!cur&&!dl&&<div style={{textAlign:"center",fontSize:12,color:C.textMute}}>ezPLM 暂未提供该资源文件，以上为程序化生成的示意图</div>}
+  </div>);
+}
+
 // ═══ 器件详情弹窗（ezPLM 参数 / 实时行情 / 可下载资源 / 参考设计）═══
 function PartDetailModal({pn,rec,onClose}){
   const[d,setD]=useState(null);
@@ -182,7 +353,7 @@ function PartDetailModal({pn,rec,onClose}){
 
       {!loading&&d?.inPLM&&(<div>
         <div style={{display:"flex",gap:2,padding:"0 24px",borderBottom:`1px solid ${C.borderLight}`}}>
-          {[["specs","技术规格"],["suppliers","供应商报价"],["downloads","资源下载"],["refs","参考设计"]].map(([k,l])=>(
+          {[["specs","技术规格"],["graphics","图形预览"],["suppliers","供应商报价"],["downloads","资源下载"],["refs","参考设计"]].map(([k,l])=>(
             <button key={k} onClick={()=>setTab(k)} style={{padding:"11px 16px",border:"none",borderBottom:`2px solid ${tab===k?C.green:"transparent"}`,background:"none",color:tab===k?C.green:C.textSec,fontSize:13,fontWeight:tab===k?700:400,cursor:"pointer"}}>
               {l}{k==="suppliers"&&offers.length>0?` (${offers.length})`:""}{k==="downloads"&&downloads.length>0?` (${downloads.length})`:""}{k==="refs"&&refs.length>0?` (${refs.length})`:""}
             </button>))}
@@ -196,6 +367,8 @@ function PartDetailModal({pn,rec,onClose}){
                 <span style={{fontFamily:"'DM Mono',monospace",fontWeight:600,textAlign:"right"}}>{p.value}{p.unit?` ${p.unit}`:""}</span>
               </div>))}
             </div>):<p style={{fontSize:13,color:C.textMute}}>暂无参数数据</p>)}
+
+          {tab==="graphics"&&<GraphicsPanel d={d} pn={pn}/>}
 
           {tab==="suppliers"&&(<div>
             {offers.length?(<table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
