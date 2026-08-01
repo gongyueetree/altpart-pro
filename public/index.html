@@ -1154,7 +1154,7 @@ function GraphicsPanel({d,pn}){
         background:ok?C.greenLight:C.amberBg,color:ok?C.green:C.amber,
         border:`1px solid ${ok?C.greenMid:"#f0dca0"}`}}>{ok?`✓ ${label}`:"⚠ 示意渲染"}</span>);
 
-  const card=(title,extra,body,foot,onZoom)=>(
+  const card=(title,extra,body,foot,onZoom,dl)=>(
     <div style={{border:`1px solid ${C.border}`,borderRadius:12,background:"#fff",padding:"12px 12px 10px",
       display:"flex",flexDirection:"column",minWidth:0}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:8}}>
@@ -1167,7 +1167,44 @@ function GraphicsPanel({d,pn}){
         {onZoom&&<button onClick={onZoom} style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${C.border}`,
           background:"#fff",color:C.textSec,fontSize:11,cursor:"pointer",whiteSpace:"nowrap"}}>⛶ 放大</button>}
       </div>
+      {dl&&<div style={{marginTop:8,paddingTop:8,borderTop:`1px dashed ${C.borderLight}`,
+        display:"flex",gap:6,flexWrap:"wrap",justifyContent:"center"}}>{dl}</div>}
     </div>);
+
+  // 各栏下载区：按该栏实际来源给出对应操作
+  const kicadFpLib=()=>(srcFp==="kicad_official"&&extUrl.footprint)
+    ? extUrl.footprint.split("/").slice(-2)[0].replace(".pretty","") : "Package";
+  const symMeta=()=>({partNumber:pn,footprint:pkg?`${kicadFpLib()}:${pkg}`:"",
+    datasheet:d?.datasheetUrl||"",manufacturer:d?.manufacturer||"",description:d?.description||"",
+    source:{ezplm:"ezPLM 库文件",kicad_official:"KiCad 官方库",pdf_datasheet:"PDF 数据手册解析",
+      standard:"品类标准符号",ai_pinout:"AI 推断(未验证)",synth:"引脚数推算(未验证)"}[srcSym]||srcSym});
+
+  const dlSymbol=(<React.Fragment>
+    {srcSym==="ezplm"&&d?.symbolUrl&&
+      <a href={proxyRes(d.symbolUrl)} target="_blank" rel="noreferrer" download style={DL_SM}>⬇ ezPLM 原始符号</a>}
+    {srcSym==="kicad_official"&&extUrl.symbol&&
+      <a href={extUrl.symbol} target="_blank" rel="noreferrer" style={DL_SM}>🔗 官方符号库</a>}
+    {ksym&&<button onClick={()=>downloadText(`${pn}.kicad_sym`,exportKicadSym(ksym,symMeta()),"application/octet-stream")}
+      style={{...DL_SM,cursor:"pointer",borderColor:C.greenMid,background:C.greenLight,color:C.green}}
+      title="导出为 KiCad 7/8/9 通用格式，含来源标注">⬇ 导出 .kicad_sym</button>}
+  </React.Fragment>);
+
+  const dlFootprint=(<React.Fragment>
+    {srcFp==="ezplm"&&d?.footprintFileUrl&&
+      <a href={proxyRes(d.footprintFileUrl)} target="_blank" rel="noreferrer" download style={DL_SM}>⬇ {d.footprintFileName||"ezPLM 封装"}</a>}
+    {srcFp==="kicad_official"&&extUrl.footprint&&
+      <a href={extUrl.footprint} target="_blank" rel="noreferrer" style={DL_SM}>🔗 官方封装库</a>}
+    {fpText&&<button onClick={()=>downloadText(`${(pkg||pn).replace(/[^\w.\-]/g,"_")}.kicad_mod`,fpText,"application/octet-stream")}
+      style={{...DL_SM,cursor:"pointer",borderColor:C.greenMid,background:C.greenLight,color:C.green}}
+      title={srcFp==="synth"?"此为依封装名推算生成的示意封装，不可直接用于生产":"导出当前显示的封装文件"}>
+      ⬇ 导出 .kicad_mod</button>}
+  </React.Fragment>);
+
+  const dl3D=(<React.Fragment>
+    {d?.model3dUrl&&<a href={proxyRes(d.model3dUrl)} target="_blank" rel="noreferrer" download style={DL_SM}>⬇ {d.model3dFileName||"ezPLM STEP"}</a>}
+    {!d?.model3dUrl&&extUrl.model3d&&<a href={extUrl.model3d} target="_blank" rel="noreferrer" style={DL_SM}>⬇ 官方库 STEP</a>}
+    {!d?.model3dUrl&&!extUrl.model3d&&<span style={{fontSize:10,color:C.textMute}}>无可下载的 3D 模型</span>}
+  </React.Fragment>);
 
   if(loading)return(<div style={{padding:"60px",textAlign:"center",color:C.textMute}}>
     <div style={{width:28,height:28,border:`3px solid ${C.borderLight}`,borderTopColor:C.green,borderRadius:"50%",animation:"spin 0.8s linear infinite",margin:"0 auto 10px"}}/>
@@ -1200,12 +1237,12 @@ function GraphicsPanel({d,pn}){
             </div>)}
         </div>,
         pdfWarn?`⚠ ${pdfWarn}`:kskip>0?`⚠ ${kskip} 个图元未渲染`:"滚轮缩放 · 拖拽平移",
-        ()=>setZoomed("symbol"))}
+        ()=>setZoomed("symbol"),dlSymbol)}
 
       {card("📐 PCB 封装",srcBadge(srcFp),
         <svg ref={fpRef} viewBox="0 0 800 520" style={{width:"100%",height:250,background:"#fff",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>,
         "滚轮缩放 · 拖拽平移",
-        ()=>setZoomed("footprint"))}
+        ()=>setZoomed("footprint"),dlFootprint)}
 
       {card("🧊 3D 模型",
         d?.model3dUrl?<span style={{fontSize:10,padding:"2px 7px",borderRadius:4,background:C.greenLight,color:C.green,border:`1px solid ${C.greenMid}`}}>✓ 真实 STEP</span>
@@ -1214,34 +1251,13 @@ function GraphicsPanel({d,pn}){
           ?<div style={{width:"100%"}}><Step3DViewer stepUrl={d.model3dUrl} fileName={d.model3dFileName} compact/></div>
           :<Model3DSVG pkg={pkg} compact/>,
         d?.model3dUrl?"点「加载 3D 模型」后可旋转":"ezPLM 未提供 STEP",
-        null)}
+        null,dl3D)}
     </div>
 
     <div style={{textAlign:"center",fontSize:11,color:C.textMute,marginTop:10}}>
       💡 点击符号引脚或封装焊盘可高亮对应位置{pin!=null?` · 当前选中 Pin ${pin}`:""}
       {pin!=null&&<button onClick={()=>setPin(null)} style={{marginLeft:8,padding:"1px 8px",borderRadius:4,border:`1px solid ${C.border}`,background:"#fff",fontSize:11,cursor:"pointer"}}>清除</button>}
     </div>
-
-    {(d?.symbolUrl||d?.footprintFileUrl||d?.model3dUrl)&&(
-      <div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap",marginTop:12}}>
-        {d?.symbolUrl&&<a href={proxyRes(d.symbolUrl)} target="_blank" rel="noreferrer" download style={DL_BTN}>⬇ 符号文件</a>}
-        {d?.footprintFileUrl&&<a href={proxyRes(d.footprintFileUrl)} target="_blank" rel="noreferrer" download style={DL_BTN}>⬇ {d.footprintFileName||"KiCad 封装"}</a>}
-        {d?.model3dUrl&&<a href={proxyRes(d.model3dUrl)} target="_blank" rel="noreferrer" download style={DL_BTN}>⬇ {d.model3dFileName||"STEP 模型"}</a>}
-        {!d?.model3dUrl&&extUrl.model3d&&<a href={extUrl.model3d} target="_blank" rel="noreferrer" style={DL_BTN}>⬇ KiCad官方 STEP</a>}
-        {extUrl.symbol&&<a href={extUrl.symbol} target="_blank" rel="noreferrer" style={DL_BTN}>🔗 官方符号库</a>}
-        {extUrl.footprint&&<a href={extUrl.footprint} target="_blank" rel="noreferrer" style={DL_BTN}>🔗 官方封装库</a>}
-        {ksym&&srcSym!=="ezplm"&&(
-          <button onClick={()=>downloadText(`${pn}.kicad_sym`,exportKicadSym(ksym,{
-              partNumber:pn,
-              footprint:pkg?`${(srcFp==="kicad_official"&&extUrl.footprint)?extUrl.footprint.split("/").slice(-2)[0].replace(".pretty",""):"Package"}:${pkg}`:"",
-              datasheet:d?.datasheetUrl||"",manufacturer:d?.manufacturer||"",
-              description:d?.description||"",
-              source:{kicad_official:"KiCad 官方库",pdf_datasheet:"PDF 数据手册解析",standard:"品类标准符号",ai_pinout:"AI 推断(未验证)",synth:"引脚数推算(未验证)"}[srcSym]||srcSym,
-            }),"application/octet-stream")}
-            style={{...DL_BTN,cursor:"pointer",borderColor:C.greenMid,background:C.greenLight}}>
-            ⬇ 导出 {pn}.kicad_sym
-          </button>)}
-      </div>)}
 
     {zoomed&&zoomed!=="model3d"&&(
       <div onClick={()=>setZoomed(null)} style={{position:"fixed",inset:0,background:"rgba(26,46,35,.5)",zIndex:1100,
@@ -1260,6 +1276,7 @@ function GraphicsPanel({d,pn}){
   </div>);
 }
 
+const DL_SM={padding:"5px 10px",borderRadius:6,border:"1px solid #d4e8dc",background:"#fff",color:"#4a6b58",fontSize:11,fontWeight:600,textDecoration:"none",whiteSpace:"nowrap",lineHeight:1.4};
 const DL_BTN={padding:"7px 14px",borderRadius:7,border:"1px solid #d4e8dc",background:"#fff",color:"#1a6c4e",fontSize:12,fontWeight:600,textDecoration:"none",whiteSpace:"nowrap"};
 
 // ═══ 器件详情弹窗（ezPLM 参数 / 实时行情 / 可下载资源 / 参考设计）═══
