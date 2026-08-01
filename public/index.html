@@ -16,6 +16,8 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 .drag-over{border-color:#1a6c4e!important;background:#e8f5ef!important}
 @media(max-width:900px){.workbench{grid-template-columns:1fr!important}}
 @media(max-width:1100px){.graphics-grid{grid-template-columns:1fr!important}}
+@media(max-width:720px){.flow-row{font-size:10px!important;gap:3px!important}
+  .flow-row span{padding:4px 7px!important}}
 </style>
 </head>
 <body>
@@ -37,6 +39,14 @@ function scoreColor(s){return s>=90?C.green:s>=75?"#b8860b":s>=60?"#c2610c":"#c0
 function scoreBg(s){return s>=90?"#e8f5ef":s>=75?"#fef9ed":s>=60?"#fef3e6":"#fdeaea"}
 
 const VP_BTN={width:32,height:30,borderRadius:6,border:"1px solid #b8c7dc",background:"rgba(255,255,255,.94)",color:"#29415f",fontWeight:700,cursor:"pointer",fontSize:14,lineHeight:1};
+
+const FLOW_BASE={padding:"5px 11px",borderRadius:6,whiteSpace:"nowrap",flexShrink:0};
+const FLOW_A={...FLOW_BASE,background:"#e8f5ef",border:"1px solid #c2e5d3",fontWeight:600};
+const FLOW_B={...FLOW_BASE,background:"#eef0f8",border:"1px solid #c9cfe6"};
+const FLOW_C={...FLOW_BASE,background:"#EEEDFE",border:"1px solid #AFA9EC"};
+const FLOW_D={...FLOW_BASE,background:"#fef9ed",border:"1px solid #f0dca0"};
+const FLOW_E={...FLOW_BASE,background:"#1a6c4e",color:"#fff",fontWeight:600};
+const FLOW_ARROW={flexShrink:0,color:"#8aa698"};
 
 const RES_BTN={display:"inline-block",padding:"5px 10px",borderRadius:6,border:"1px solid #d4e8dc",background:"#fff",color:"#4a6b58",fontSize:11,textDecoration:"none",whiteSpace:"nowrap"};
 
@@ -643,13 +653,16 @@ function standardSymbol(kind,partNumber){
 function symbolFromPdfPins(partNumber,pdfPins){
   const list=(pdfPins||[]).filter(p=>p&&p.number);
   if(list.length<2)return null;
-  const isPwr=p=>p.type==="power";
-  const isIn=p=>p.type==="input";
-  const isOut=p=>p.type==="output";
-  // KiCad 惯例：输入在左，输出在右，电源上下
-  const left=list.filter(p=>isIn(p)||(!isOut(p)&&!isPwr(p)));
-  const right=list.filter(isOut);
-  const pwr=list.filter(isPwr);
+  const isNC=p=>p.type==="no_connect"||/^n\.?c\.?$|^nc\d*$/i.test(p.name||"");
+  const isPwr=p=>p.type==="power"&&!isNC(p);
+  const isIn=p=>p.type==="input"&&!isNC(p);
+  const isOut=p=>p.type==="output"&&!isNC(p);
+  // KiCad 惯例：输入在左，输出在右，电源上下；NC 集中排在左侧末尾，不与信号脚混排
+  const nc=list.filter(isNC);
+  const sig=list.filter(p=>!isNC(p));
+  const left=[...sig.filter(p=>isIn(p)||(!isOut(p)&&!isPwr(p))),...nc];
+  const right=sig.filter(isOut);
+  const pwr=sig.filter(isPwr);
   const rows=Math.max(left.length,right.length,1);
   const pitch=2.54,len=2.54;
   const halfH=Math.max(5.08,(rows-1)*pitch/2+2.54);
@@ -1292,12 +1305,12 @@ function HomePage({onSubmit,busy,err}){
       {["STM32F103C8T6","LM358","AMS1117-3.3","TL431"].map(x=>(
         <button key={x} onClick={()=>setPn(x)} style={{padding:"3px 9px",borderRadius:5,border:`1px solid ${C.border}`,background:"#fff",color:C.textSec,fontSize:11,fontFamily:"'DM Mono',monospace",cursor:"pointer",marginRight:4}}>{x}</button>))}
     </div>
-    <div style={{marginTop:28,display:"flex",alignItems:"center",justifyContent:"center",gap:8,flexWrap:"wrap",fontSize:12,color:C.textSec}}>
-      <span style={{padding:"4px 10px",borderRadius:5,background:C.greenLight,border:`1px solid ${C.greenMid}`,fontWeight:600}}>① 本地库查参数</span><span>→</span>
-      <span style={{padding:"4px 10px",borderRadius:5,background:C.indigoBg,border:`1px solid ${C.indigoBorder}`}}>② 调优先级/约束</span><span>→</span>
-      <span style={{padding:"4px 10px",borderRadius:5,background:"#EEEDFE",border:"1px solid #AFA9EC"}}>③ AI推荐候选</span><span>→</span>
-      <span style={{padding:"4px 10px",borderRadius:5,background:C.amberBg,border:"1px solid #f0dca0"}}>④ 算法评分淘汰</span><span>→</span>
-      <span style={{padding:"4px 10px",borderRadius:5,background:C.green,color:"#fff",fontWeight:600}}>⑤ Top 5</span>
+    <div className="flow-row" style={{marginTop:28,display:"flex",alignItems:"center",justifyContent:"center",gap:6,flexWrap:"nowrap",fontSize:12,color:C.textSec,overflowX:"auto",paddingBottom:4}}>
+      <span style={FLOW_A}>① 本地库查参数</span><span style={FLOW_ARROW}>→</span>
+      <span style={FLOW_B}>② 调优先级/约束</span><span style={FLOW_ARROW}>→</span>
+      <span style={FLOW_C}>③ AI推荐候选</span><span style={FLOW_ARROW}>→</span>
+      <span style={FLOW_D}>④ 算法评分淘汰</span><span style={FLOW_ARROW}>→</span>
+      <span style={FLOW_E}>⑤ Top 5</span>
     </div>
   </div>);
 }

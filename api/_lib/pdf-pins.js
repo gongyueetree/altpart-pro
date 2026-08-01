@@ -126,6 +126,10 @@ async function extractPinsFromPdf(pdfUrl, expectedPins) {
 
   let warning = "";
   if (!pins.length) { cache.set(ck, false, 3600); return null; }
+  // PDF 表格解析同样可能把未识别行归成 NC，占比过高时不可信
+  const ncCount = pins.filter(p => /^n\.?c\.?$|^nc\d*$|no[_ ]?connect/i.test(p.name)).length;
+  if (ncCount / pins.length > 0.5) { cache.set(ck, false, 3600); return null; }
+  if (ncCount > 0) warning = `含 ${ncCount} 个 NC 引脚，请与 datasheet 核对`;
   if (expectedPins && pins.length !== expectedPins) {
     warning = `提取到 ${pins.length} 个引脚，与封装标称 ${expectedPins} 个不一致，请人工核对`;
   }

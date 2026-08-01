@@ -28,7 +28,10 @@ ${pkg ? `封装：${pkg}` : ""}${pinCount ? `，共 ${pinCount} 个引脚` : ""}
 
 ⚠ 必须是 "${partNumber}" **本身**的引脚定义，严禁套用同系列其它型号或相似型号的引脚。
 ⚠ 不确定就返回 {"pins":[],"reason":"不确定"}，宁可为空也不要编造。
-⚠ 引脚名用 datasheet 中的正式缩写（如 VCC / GND / OUT / IN+ / NC / EP），不要用中文或自造名。
+⚠ **严禁用 "NC" 填充你不确定的引脚**。NC 表示"厂商明确标注为不连接"，
+   不是"我不知道"。只有 datasheet 确实标 NC 的引脚才可填 NC；
+   若多数引脚你都不确定，整体返回空数组，不要逐个填 NC 凑数。
+⚠ 引脚名用 datasheet 中的正式缩写（如 VCC / GND / OUT / IN+ / EP），不要用中文或自造名。
 
 type 取值：input / output / bidirectional / power / passive / no_connect
 只返回 JSON：
@@ -59,10 +62,33 @@ ${pinCount ? `pins 数组应有 ${pinCount} 项，编号 1..${pinCount}（含 EP
 
   if (pins.length < 2) { cache.set(ck, false, 3600); return null; }
 
+  // NC 占比过高说明模型在用 NC 填充未知引脚（NC 是明确声明，不是"不知道"）
+  const ncCount = pins.filter(p => /^n\.?c\.?$|^nc\d*$|no[_ ]?connect/i.test(p.name)).length;
+  const ncRatio = ncCount / pins.length;
+  if (ncRatio > 0.4) {
+    console.warn(`[pinout] ${partNumber}: NC 占比 ${(ncRatio * 100).toFixed(0)}%（${ncCount}/${pins.length}），判定为填充式作答，拒绝采用`);
+    cache.set(ck, false, 3600);
+    return null;
+  }
+  // 同名非电源引脚大量重复也是填充特征
+  const nameCount = {};
+  for (const p of pins) {
+    if (/^(gnd|vss|vcc|vdd|vee|v\+|v-|nc|ep|agnd|dgnd)$/i.test(p.name)) continue;
+    nameCount[p.name.toUpperCase()] = (nameCount[p.name.toUpperCase()] || 0) + 1;
+  }
+  if (Object.values(nameCount).some(c => c >= 4)) {
+    console.warn(`[pinout] ${partNumber}: 存在大量同名信号引脚，判定为填充式作答，拒绝采用`);
+    cache.set(ck, false, 3600);
+    return null;
+  }
+
   // 引脚数与封装标称不符时如实告警，不静默采用
   let warning = "";
   if (pinCount && Math.abs(pins.length - pinCount) > 1) {
     warning = `AI 返回 ${pins.length} 个引脚，与封装标称 ${pinCount} 个不符`;
+  }
+  if (ncCount > 0) {
+    warning = (warning ? warning + "；" : "") + `含 ${ncCount} 个 NC 引脚，请与 datasheet 核对是否确为空脚`;
   }
   const result = {
     pins,
