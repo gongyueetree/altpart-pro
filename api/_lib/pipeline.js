@@ -3,6 +3,7 @@
 
 const { queryLocalDB, queryLocalDBBatch, searchParts } = require("./ezplm");
 const { applyScenarioPriority, getApplicationHint } = require("./applications");
+const { applyProfile, PROFILES } = require("./rule-profiles");
 const { getDistributorPart } = require("./distributor");
 const { analyzeComponent, getCandidates, lookupPartSpecs } = require("./gemini");
 const { fetchComponentFromAPIs } = require("./component");
@@ -342,6 +343,18 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       continue;
     }
 
+    // ── 替代模式确定性门槛（此前仅靠提示词，无程序化约束）──
+    const gate = applyProfile(mode, { original, candidate: cand, scoreResult: result });
+    if (!gate.pass) {
+      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: gate.reason });
+      continue;
+    }
+    if (gate.downgrade === "NEEDS_VERIFICATION") {
+      result.needsVerification = true;
+      (result.verifyReasons ||= []).push(gate.reason);
+      result.replacementLevel = { level: "NEEDS_VERIFICATION", label: "待核验", color: "#8a8a8a", desc: gate.reason };
+    }
+
     const isPreferred = preferredManufacturers.some(m =>
       cand.manufacturer.toLowerCase().includes(m.toLowerCase()) || m.toLowerCase().includes(cand.manufacturer.toLowerCase())
     );
@@ -362,7 +375,19 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   if (!scored.length && lowScored.length) {
     lowScored.sort((a, b) => b.result.overallScore - a.result.overallScore);
     for (const { cand, result } of lowScored.slice(0, 3)) {
-      const isPreferred = preferredManufacturers.some(m =>
+      // ── 替代模式确定性门槛（此前仅靠提示词，无程序化约束）──
+    const gate = applyProfile(mode, { original, candidate: cand, scoreResult: result });
+    if (!gate.pass) {
+      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: gate.reason });
+      continue;
+    }
+    if (gate.downgrade === "NEEDS_VERIFICATION") {
+      result.needsVerification = true;
+      (result.verifyReasons ||= []).push(gate.reason);
+      result.replacementLevel = { level: "NEEDS_VERIFICATION", label: "待核验", color: "#8a8a8a", desc: gate.reason };
+    }
+
+    const isPreferred = preferredManufacturers.some(m =>
         cand.manufacturer.toLowerCase().includes(m.toLowerCase()) || m.toLowerCase().includes(cand.manufacturer.toLowerCase()));
       scored.push({
         partNumber: cand.partNumber, manufacturer: cand.manufacturer, description: cand.description,
@@ -407,6 +432,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       aiLookups: stats.aiLookups,
       executionTimeMs: Date.now() - startTime,
       application,
+      mode, modeNote: PROFILES[mode]?.note || "",
     },
     original,
     recommendations: scored.slice(0, FINAL_RESULT_COUNT),

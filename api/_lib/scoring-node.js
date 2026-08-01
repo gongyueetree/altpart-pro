@@ -1,240 +1,330 @@
-// scoring-node.js — v2.2 评分引擎（CommonJS / 后端）
-// 解决 GPT 诊断的核心工程问题：
-//  #1 "A直接替代" 必须有引脚证据，否则降级为 "Pin-to-Pin候选(待验证)"
-//  #2 N/A 不再默认 50 分 → 拆分 技术兼容度 / 证据覆盖率 / 结论可信度
-//  #5 数值比较走单位归一化（units.js），正确处理范围、SI前缀、min/typ/max
+// scoring-node.js — v6.0 评分引擎
+//
+// 相对 v5.5 的关键修复：
+//  1. 原型号与候选各自解析为 QuantityIR，不再"候选裸值 + 原型号单位"
+//     （此前 72 MHz vs 72,000,000 Hz 被判为差距显著）
+//  2. 比较方向由参数语义决定（higher_better / lower_better / range_cover / exact ...）
+//     （此前耐压 30V→100V、静态电流 700µA→50µA 这类"更优"候选被扣分）
+//  3. 硬约束缺失不再绕过：缺失 → NEEDS_VERIFICATION，不进正常排名
+//  4. 带测试条件的参数（Rds(on)@Vgs）条件不同时不直接比较
 
-const { parseQuantity, quantityCloseness, rangeCoverage } = require("./units");
+const { toQuantityIR, comparable, conditionMatch } = require("./quantity");
+const { semanticsOf, PKG_COMPAT, pkgFamily } = require("./comparison-semantics");
 
-const PARAM_TOLERANCE = {
-  "增益带宽积":0.25, GBW:0.25, "Gain Bandwidth":0.25, Bandwidth:0.25, "-3dB带宽":0.25,
-  "压摆率":0.25, "Slew Rate":0.25, SR:0.25,
-  "输入失调电压":0.5, "Input Offset Voltage":0.5, Vos:0.5,
-  "输入偏置电流":0.6, "Input Bias Current":0.6,
-  "电源电流":0.3, "Supply Current":0.3, "静态电流":0.3, "Quiescent Current":0.3,
-  "最高主频":0.15, "Max Frequency":0.15, Frequency:0.15,
-  Flash:0.1, SRAM:0.1,
-  "采样率":0.2, "Sample Rate":0.2, "Max Sample Rate":0.2,
-  "ESD耐受":0.3, "ESD Tolerance":0.3,
-  "参考价格":0.5, "Reference Price":0.5, Price:0.5,
-  "Vds(max)":0.2, "Id(max)":0.2, "Rds(on)":0.3, "Vgs(th)":0.3, Qg:0.3,
-  "输出电压":0.05, "Output Voltage":0.05, "最大输出电流":0.2, "压差":0.3,
-  "PSRR":0.2, "输出噪声":0.3, "效率":0.1,
-};
-
-const DISCRETE_PARAMS = ["通道数","Channels","Number of Channels","封装","Package","常见封装",
-  "分辨率","Resolution","接口","Interface","接口类型","通信接口","轨到轨","Rail-to-Rail",
-  "内核","Core","类型","Type","拓扑","Topology","极性","Polarity"];
-
-const RANGE_PARAMS = ["工作温度","Operating Temperature","Temperature","工作电压","Supply Voltage",
-  "输入电压","Input Voltage","供电电压范围","Supply Voltage Range","输入电压范围","Input Voltage Range"];
-
-const CRITICAL_IDENTITY = ["封装","Package","内核","Core","通道数","Channels","分辨率","Resolution",
-  "类型","Type","极性","Polarity","拓扑","Topology"];
-
-const PKG_COMPAT = {
-  "SOIC-8":["SOP-8","SO-8"], "SOP-8":["SOIC-8","SO-8"],
-  "SOT-23-5":["SOT-23-5L","SC-74A","SOT23-5"], "SOT23-5":["SOT-23-5","SOT-23-5L"],
-  "SOT-23-6":["SOT-26"], "SSOP-28":["TSSOP-28"], "TSSOP-28":["SSOP-28"],
-  "DIP-8":["PDIP-8"], "PDIP-8":["DIP-8"],
-  "LQFP-48":["TQFP-48","QFP-48"], "TQFP-48":["LQFP-48"],
-  "LQFP-64":["TQFP-64"], "LQFP-100":["TQFP-100"],
-  "QFN-16":["WQFN-16","DFN-16"],
-};
-
+/* ── 数据来源可信度 ── */
 const SOURCE_CONFIDENCE = {
-  ezplm: 1.0, manual: 1.0, datasheet: 0.95,
-  digikey: 0.85, mouser: 0.85, lcsc: 0.8,
-  ai_lookup: 0.45, ai_search: 0.45, "": 0.0,
+  ezplm: 1.0, manual: 1.0, manufacturer: 0.98, datasheet: 0.95,
+  digikey: 0.85, mouser: 0.85, "digikey+mouser": 0.88, lcsc: 0.8,
+  kicad: 0.8, third_party: 0.6,
+  ai_lookup: 0.45, ai_search: 0.45, ai_pinout: 0.35, ai: 0.45,
+  "": 0.0,
 };
 
-const DIMENSIONS = {
-  hardware:   { weight:0.30, label:"硬件兼容", keywords:["封装","Package","引脚","Pin","GPIO","工作温度","Temperature","工作电压","Supply Voltage","输入电压","Input Voltage"] },
-  functional: { weight:0.25, label:"功能兼容", keywords:["内核","Core","主频","Frequency","Flash","SRAM","通道数","Channel","分辨率","Resolution","带宽","Bandwidth","接口","Interface","ADC","定时器","Timer","通信","拓扑","Topology"] },
-  electrical: { weight:0.20, label:"电气参数", keywords:["失调","Offset","偏置","Bias","噪声","Noise","CMRR","压摆率","Slew","Rds","Vgs","Qg","PSRR","效率","Efficiency","压差","Dropout","轨到轨","Rail","ESD","INL","SNR","静态电流","Quiescent"] },
-  supply:     { weight:0.15, label:"供应链",   keywords:["价格","Price","库存","Stock"] },
-  risk:       { weight:0.10, label:"风险评估", keywords:[] },
+/* ── 推荐等级 ── */
+const LEVELS = {
+  DIRECT_REPLACEMENT:   { level: "DIRECT_REPLACEMENT",   label: "直接替代",     color: "#1a6c4e" },
+  COMPATIBLE_WITH_REVIEW:{ level: "COMPATIBLE_WITH_REVIEW", label: "兼容(待复核)", color: "#2d9d6f" },
+  FUNCTIONAL_ALTERNATIVE:{ level: "FUNCTIONAL_ALTERNATIVE", label: "功能替代",   color: "#c2610c" },
+  REDESIGN_REQUIRED:    { level: "REDESIGN_REQUIRED",    label: "需改板/改固件", color: "#b8860b" },
+  NEEDS_VERIFICATION:   { level: "NEEDS_VERIFICATION",   label: "待核验",       color: "#8a8a8a" },
+  NOT_RECOMMENDED:      { level: "NOT_RECOMMENDED",      label: "不推荐",       color: "#c0392b" },
+  REJECTED:             { level: "REJECTED",             label: "已排除",       color: "#c0392b" },
 };
 
-function isNA(v) {
-  return v === "N/A" || v === undefined || v === null || v === "" ||
-    (typeof v === "string" && /^n\/?a$/i.test(v.trim()));
-}
-function matchTol(paramName, nameEn) {
-  const e = Object.entries(PARAM_TOLERANCE).find(([k]) =>
-    paramName.includes(k) || (nameEn || "").includes(k));
-  return e ? e[1] : 0.15;
-}
-function isDiscrete(paramName, nameEn) {
-  return DISCRETE_PARAMS.some(k => paramName.includes(k) || (nameEn || "").includes(k));
-}
-function isRangeParam(paramName, nameEn) {
-  return RANGE_PARAMS.some(k => paramName.includes(k) || (nameEn || "").includes(k));
-}
-function isCriticalIdentity(paramName, nameEn) {
-  return CRITICAL_IDENTITY.some(k => paramName.includes(k) || (nameEn || "").includes(k));
-}
+const CRITICAL_IDENTITY = /封装|package|内核|core\b|通道数|channels?|分辨率|resolution|类型|^type$|极性|polarity|拓扑|topology/i;
 
-function scoreOneParam(origParam, candValue) {
-  const pName = origParam.name || "", pNameEn = origParam.nameEn || "";
-  if (isNA(candValue)) return { score: null, comment: "未提供", known: false };
-  const ov = origParam.value;
+/* ── 单参数比较 ── */
+/**
+ * @returns {score:0..100|null, comment, known, semantics, conditionMismatch}
+ */
+function compareParam(origParam, candRaw, candMeta = {}) {
+  const name = origParam.name || "", nameEn = origParam.nameEn || "";
+  const rule = semanticsOf(name, nameEn);
+  const unitHint = origParam.unit || "";
 
-  if (isDiscrete(pName, pNameEn)) {
-    const ovs = String(ov).trim().toLowerCase();
-    const cvs = String(candValue).trim().toLowerCase();
-    if (ovs === cvs) return { score: 100, comment: "一致", known: true };
-    if (pName.includes("封装") || pNameEn.toLowerCase().includes("package")) {
-      const compat = PKG_COMPAT[String(ov)] || [];
-      if (compat.some(c => cvs.includes(c.toLowerCase()))) return { score: 78, comment: "封装家族兼容(引脚待核)", known: true };
-    }
-    if (ovs.includes(cvs) || cvs.includes(ovs)) return { score: 85, comment: "基本一致", known: true };
+  const a = toQuantityIR(origParam.value, unitHint, { sourceType: origParam.source });
+  const b = toQuantityIR(candRaw, unitHint, { sourceType: candMeta.source, confidence: candMeta.confidence });
+
+  if (!b.known) return { score: null, comment: "未提供", known: false, semantics: rule.semantics };
+
+  // 带条件参数：条件不同不得直接比较
+  let sem = rule.semantics, inner = rule.inner;
+  let conditionMismatch = null;
+  if (sem === "conditioned") {
+    const cm = conditionMatch(a, b);
+    if (cm.checked && !cm.same) conditionMismatch = cm.reason;
+    sem = inner || "lower_better";
+  }
+
+  const textCompare = () => {
+    const av = String(a.text ?? a.rawValue ?? "").trim().toLowerCase();
+    const bv = String(b.text ?? b.rawValue ?? "").trim().toLowerCase();
+    if (!av) return { score: 60, comment: "原型号无此参数", known: true };
+    if (av === bv) return { score: 100, comment: "一致", known: true };
+    if (av.includes(bv) || bv.includes(av)) return { score: 85, comment: "基本一致", known: true };
     return { score: 15, comment: "不匹配", known: true };
-  }
+  };
 
-  if (isRangeParam(pName, pNameEn)) {
-    const oq = parseQuantity(ov, origParam.unit), cq = parseQuantity(candValue, origParam.unit);
-    const cov = rangeCoverage(oq, cq);
-    if (cov !== null) {
-      const score = Math.round(cov * 100);
-      return { score, comment: cov >= 1 ? "完全覆盖" : cov >= 0.85 ? "基本覆盖" : cov >= 0.4 ? "部分覆盖" : "不覆盖", known: true };
+  let out;
+  switch (sem) {
+    case "exact": {
+      if (comparable(a, b)) {
+        out = a.canonicalTyp === b.canonicalTyp
+          ? { score: 100, comment: "一致", known: true }
+          : { score: 10, comment: `不一致（${fmt(a)} vs ${fmt(b)}）`, known: true };
+      } else out = textCompare();
+      break;
+    }
+    case "range_cover": {
+      if (a.isRange && b.isRange && comparable(a, b)) {
+        if (b.canonicalMin <= a.canonicalMin && b.canonicalMax >= a.canonicalMax)
+          out = { score: 100, comment: "完全覆盖", known: true };
+        else {
+          const span = Math.abs(a.canonicalMax - a.canonicalMin) || 1;
+          const short = Math.max(0, a.canonicalMin - b.canonicalMin < 0 ? b.canonicalMin - a.canonicalMin : 0)
+                      + Math.max(0, a.canonicalMax - b.canonicalMax);
+          const r = short / span;
+          out = r <= 0.05 ? { score: 88, comment: "基本覆盖", known: true }
+              : r <= 0.25 ? { score: 55, comment: "部分覆盖", known: true }
+              : { score: 15, comment: "范围不足", known: true, rangeFail: true };
+        }
+      } else if (comparable(a, b)) {
+        // 一方非范围：以数值落点判断
+        out = (b.canonicalTyp >= (a.canonicalMin ?? a.canonicalTyp) && b.canonicalTyp <= (a.canonicalMax ?? a.canonicalTyp))
+          ? { score: 90, comment: "在范围内", known: true }
+          : { score: 45, comment: "超出范围", known: true };
+      } else out = textCompare();
+      break;
+    }
+    case "higher_better":
+    case "lower_better": {
+      if (!comparable(a, b)) { out = textCompare(); break; }
+      const better = sem === "higher_better" ? b.canonicalTyp >= a.canonicalTyp : b.canonicalTyp <= a.canonicalTyp;
+      if (better) {
+        const improved = Math.abs(b.canonicalTyp - a.canonicalTyp) > Math.abs(a.canonicalTyp || 1) * 1e-9;
+        out = { score: 100, comment: improved ? "优于原型号" : "一致", known: true, better: improved };
+      } else {
+        const denom = Math.abs(a.canonicalTyp) || 1;
+        const worse = Math.abs(b.canonicalTyp - a.canonicalTyp) / denom;   // 劣化比例
+        const tol = rule.tolerance || 0.15;
+        out = worse <= tol * 0.5 ? { score: 88, comment: "略低于原型号", known: true }
+            : worse <= tol       ? { score: 72, comment: "低于原型号但在容差内", known: true }
+            : worse <= tol * 2.5 ? { score: 45, comment: "明显低于原型号", known: true }
+            : { score: 15, comment: `不满足（${fmt(a)} → ${fmt(b)}）`, known: true };
+      }
+      break;
+    }
+    case "compatible_set": {
+      const av = pkgFamily(a.text ?? a.rawValue), bv = pkgFamily(b.text ?? b.rawValue);
+      if (!av) { out = { score: 60, comment: "原型号未标注", known: true }; break; }
+      if (av === bv) { out = { score: 100, comment: "一致", known: true }; break; }
+      const compat = PKG_COMPAT[String(a.rawValue).trim()] || PKG_COMPAT[av] || [];
+      if (compat.some(c => bv.includes(pkgFamily(c)))) { out = { score: 80, comment: "同兼容族(引脚待核)", known: true }; break; }
+      if (av.includes(bv) || bv.includes(av)) { out = { score: 70, comment: "疑似兼容(需确认)", known: true }; break; }
+      out = { score: 12, comment: "不兼容", known: true };
+      break;
+    }
+    case "boolean": {
+      const truthy = v => /^(y|yes|true|是|支持|有|rail-?to-?rail)/i.test(String(v || "").trim());
+      out = truthy(a.rawValue) === truthy(b.rawValue)
+        ? { score: 100, comment: "一致", known: true } : { score: 30, comment: "不一致", known: true };
+      break;
+    }
+    case "enum": case "text_match": out = textCompare(); break;
+    case "nearest":
+    default: {
+      if (!comparable(a, b)) { out = textCompare(); break; }
+      const denom = Math.abs(a.canonicalTyp) || 1;
+      const d = Math.abs(b.canonicalTyp - a.canonicalTyp) / denom;
+      const tol = rule.tolerance || 0.15;
+      out = d <= 0.005 ? { score: 100, comment: "一致", known: true }
+          : d <= tol      ? { score: 92, comment: "接近", known: true }
+          : d <= tol * 2  ? { score: 78, comment: "可接受", known: true }
+          : d <= tol * 4  ? { score: 55, comment: "有差异", known: true }
+          : { score: 20, comment: "差距显著", known: true };
     }
   }
 
-  const tol = matchTol(pName, pNameEn);
-  const oq = parseQuantity(ov, origParam.unit), cq = parseQuantity(candValue, origParam.unit);
-  const close = quantityCloseness(oq, cq, tol);
-  if (close !== null) {
-    return { score: Math.round(close * 100), comment: close >= 0.95 ? "一致" : close >= 0.85 ? "接近" : close >= 0.7 ? "可接受" : close >= 0.5 ? "有差异" : "差距显著", known: true };
+  out.semantics = sem;
+  out.conditionMismatch = null;
+  if (conditionMismatch) {
+    // 条件不同 → 不能按数值直接下结论，降级为待确认
+    out.score = Math.min(out.score ?? 60, 55);
+    out.comment = "测试条件不一致，需人工核对";
+    out.conditionMismatch = conditionMismatch;
   }
-
-  const same = String(ov).trim().toLowerCase() === String(candValue).trim().toLowerCase();
-  return same ? { score: 100, comment: "一致", known: true } : { score: 55, comment: "待确认(无法解析)", known: true };
+  return out;
 }
 
-function getReplacementLevel({ technical, evidenceCoverage, confidence, criticalFail, pinVerified }) {
-  if (criticalFail) {
-    if (confidence >= 55) return { level: "F", label: "功能替代", color: "#c2610c", desc: "关键参数不同，需改固件/改板验证" };
-    return { level: "N", label: "仅供新设计", color: "#b8860b", desc: "差异较大，建议仅用于新设计" };
-  }
-  if (evidenceCoverage < 40) {
-    return { level: "P0", label: "数据不足", color: "#8a8a8a", desc: "证据覆盖率过低，无法判断兼容性" };
-  }
-  if (confidence >= 85 && evidenceCoverage >= 70) {
-    if (pinVerified) return { level: "A", label: "直接替代", color: "#1a6c4e", desc: "引脚已验证，可直接替换" };
-    return { level: "P2", label: "Pin-to-Pin候选", color: "#2d9d6f", desc: "参数高度匹配，引脚需人工核对后方可直接替换" };
-  }
-  if (confidence >= 70) return { level: "B", label: "硬件兼容", color: "#2d9d6f", desc: "封装兼容，软件/配置需验证" };
-  if (confidence >= 55) return { level: "F", label: "功能替代", color: "#c2610c", desc: "功能满足，需改板或改固件" };
-  if (confidence >= 40) return { level: "N", label: "仅供新设计", color: "#b8860b", desc: "适合新项目选型" };
-  return { level: "X", label: "不推荐", color: "#c0392b", desc: "存在关键不兼容风险或证据不足" };
+function fmt(q) {
+  if (!q?.known) return "N/A";
+  const v = q.isRange ? `${q.min}~${q.max}` : (q.value ?? q.typ);
+  return `${v}${q.unit ? " " + q.unit : ""}`;
 }
 
-function calculateDimensionScores(paramScores, params) {
-  const dims = {};
-  for (const [dimName, dim] of Object.entries(DIMENSIONS)) {
-    if (dimName === "risk") continue;
-    const matching = paramScores.filter(ps => {
-      if (!ps.known) return false;
-      const p = params?.find(x => x.id === ps.paramId);
-      return p && dim.keywords.some(k => p.name.includes(k) || (p.nameEn || "").includes(k));
-    });
-    dims[dimName] = matching.length
-      ? Math.round(matching.reduce((s, ps) => s + ps.score, 0) / matching.length)
-      : null;
-  }
-  const known = paramScores.filter(p => p.known).length;
-  const total = paramScores.length || 1;
-  const aiHeavy = paramScores.filter(p => p.known && (p.source === "ai_lookup" || p.source === "ai_search")).length;
-  const coverage = known / total;
-  dims.risk = Math.max(0, Math.round(coverage * 100 - (aiHeavy / total) * 25));
-  return dims;
-}
-
-function calculateScore(originalParams, candidate, priorityOrder, constraints = {}) {
+/* ── 主评分 ── */
+function calculateScore(originalParams, candidate, priorityOrder, constraints = {}, opts = {}) {
   const paramScores = [];
-  let eliminated = false, elimReason = "", criticalFail = false;
-  let techWeight = 0, techSum = 0;
-  let covWeight = 0, covKnownWeight = 0;
-  let srcWeight = 0, srcSum = 0;
-  let pinVerified = false;
+  let rejected = false, rejectReason = "";
+  let needsVerification = false; const verifyReasons = [];
+  let criticalFail = false;
+
+  let techW = 0, techSum = 0;
+  let covW = 0, covKnownW = 0;
+  let srcW = 0, srcSum = 0;
+  let pinVerified = !!candidate.pinVerified;
 
   priorityOrder.forEach((paramId, index) => {
     const origP = originalParams.find(p => p.id === paramId);
     if (!origP) return;
     const weight = priorityOrder.length - index;
-    const candVal = candidate.parameters?.[paramId];
-    const cv = candVal?.value;
-    const src = candVal?.source || "";
+    const cv = candidate.parameters?.[paramId];
+    const res = compareParam(origP, cv?.value, cv || {});
 
-    if ((origP.name.includes("引脚") || (origP.nameEn || "").toLowerCase().includes("pin")) && !isNA(cv) && candVal?.pinVerified) {
-      pinVerified = true;
-    }
-
-    let { score, comment, known } = scoreOneParam(origP, cv);
-
+    // ── 约束检查（缺失值不再绕过）──
     const con = constraints[paramId];
-    if (con && !eliminated && known) {
-      const conType = con.constraintType || "hard";
-      let passed = true;
-      if (con.options?.length) {
-        passed = con.options.some(o => String(cv).toLowerCase().includes(o.toLowerCase()));
+    if (con && con.constraintType) {
+      const isHard = con.constraintType === "hard";
+      if (!res.known) {
+        if (isHard) { needsVerification = true; verifyReasons.push(`硬约束参数「${origP.name}」缺失，无法验证`); }
+        // 软偏好缺失只影响证据覆盖率（下方 covKnownW 自然不计入）
       } else {
-        const oq = parseQuantity(cv, origP.unit);
-        if (oq.parsed) {
-          if (con.min != null && oq.typ < parseQuantity(String(con.min), origP.unit).typ) passed = false;
-          if (con.max != null && oq.typ > parseQuantity(String(con.max), origP.unit).typ) passed = false;
-        }
+        const pass = checkConstraint(con, cv?.value, origP.unit);
+        if (!pass && isHard) { rejected = true; rejectReason = `不满足硬约束：${origP.name}`; }
+        if (!pass && !isHard) { res.score = Math.max(0, (res.score ?? 60) - 25); res.comment = "不满足偏好"; }
       }
-      if (!passed && conType === "hard") { eliminated = true; elimReason = `${origP.name}不满足硬约束`; }
-      if (!passed && conType === "soft") { score = Math.max(0, score - 25); comment = "不满足偏好"; }
     }
 
-    if (known && score < 40 && isCriticalIdentity(origP.name, origP.nameEn)) criticalFail = true;
-
-    if (known) {
-      techWeight += weight; techSum += score * weight;
-      const sc = SOURCE_CONFIDENCE[src] ?? 0.45;
-      srcWeight += weight; srcSum += sc * weight;
+    if (res.known && res.score !== null && res.score < 40 && CRITICAL_IDENTITY.test(`${origP.name} ${origP.nameEn || ""}`)) {
+      criticalFail = true;
     }
-    covWeight += weight;
-    if (known) covKnownWeight += weight;
+    if (res.rangeFail) { rejected = rejected || !!opts.rejectOnRangeFail; if (opts.rejectOnRangeFail) rejectReason = rejectReason || `范围不覆盖：${origP.name}`; }
+
+    if (res.known) {
+      techW += weight; techSum += res.score * weight;
+      const sc = SOURCE_CONFIDENCE[cv?.source] ?? 0.45;
+      srcW += weight; srcSum += sc * weight;
+    }
+    covW += weight; if (res.known) covKnownW += weight;
 
     paramScores.push({
       paramId, paramName: origP.name, paramNameEn: origP.nameEn,
-      value: isNA(cv) ? "N/A" : cv, unit: candVal?.unit || origP.unit || "",
-      score: known ? score : null, comment, known,
-      source: src, sourceLabel: candVal?.sourceLabel || "",
-      confidence: candVal?.confidence || (known ? "medium" : "none"),
+      origValue: origP.value, origUnit: origP.unit,
+      value: res.known ? cv?.value : "N/A", unit: cv?.unit || origP.unit || "",
+      score: res.known ? res.score : null, comment: res.comment, known: res.known,
+      semantics: res.semantics, better: !!res.better,
+      conditionMismatch: res.conditionMismatch || null,
+      source: cv?.source || "", sourceLabel: cv?.sourceLabel || "",
+      confidence: cv?.confidence || (res.known ? "medium" : "none"),
     });
   });
 
-  const technical = techWeight ? Math.round(techSum / techWeight) : 0;
-  const evidenceCoverage = covWeight ? Math.round((covKnownWeight / covWeight) * 100) : 0;
-  const sourceConfidence = srcWeight ? srcSum / srcWeight : 0;
+  const technical = techW ? Math.round(techSum / techW) : 0;
+  const evidenceCoverage = covW ? Math.round((covKnownW / covW) * 100) : 0;
+  const sourceConfidence = srcW ? srcSum / srcW : 0;
 
   let confidence = Math.round(technical * (evidenceCoverage / 100) * (0.4 + 0.6 * sourceConfidence));
   if (evidenceCoverage < 50) confidence = Math.min(confidence, 60);
   if (sourceConfidence < 0.5) confidence = Math.min(confidence, 70);
   if (criticalFail) confidence = Math.min(confidence, 55);
 
-  const dimensionScores = calculateDimensionScores(paramScores, originalParams);
-  const replacementLevel = getReplacementLevel({ technical, evidenceCoverage, confidence, criticalFail, pinVerified });
+  const level = decideLevel({
+    rejected, rejectReason, needsVerification, criticalFail, pinVerified,
+    technical, evidenceCoverage, confidence,
+    unverifiedPart: !!candidate.unverified,
+    mode: opts.mode,
+  });
 
   return {
-    eliminated, elimReason,
+    rejected, rejectReason,
+    needsVerification, verifyReasons,
     technical, evidenceCoverage, sourceConfidence: Math.round(sourceConfidence * 100),
     confidence, overallScore: confidence,
-    paramScores, dimensionScores, replacementLevel, pinVerified,
+    paramScores, pinVerified, criticalFail,
+    replacementLevel: level,
+    dimensionScores: dimensionOf(paramScores, originalParams),
   };
 }
 
-function isNumericParam(p) {
-  if (isDiscrete(p.name || "", p.nameEn || "")) return false;
-  return /^[-+±]?\d/.test(String(p.value).trim());
+/**
+ * 约束判定
+ * @param con {constraintType, min, max, options, mode}
+ *   mode="cover"：候选的范围必须**覆盖**[min,max]（温度、电压等范围参数的默认语义）
+ *   mode="within"：候选的值必须**落在**[min,max]内（价格上限、电流上限等）
+ *   未指定时：候选值本身是范围 → cover；是单值 → within
+ * @returns true 满足 / false 违反 / null 无法判定（值缺失）
+ */
+function checkConstraint(con, rawValue, unitHint) {
+  const v = toQuantityIR(rawValue, unitHint);
+  if (!v.known) return null;
+
+  if (Array.isArray(con.options) && con.options.length) {
+    const s = String(v.text ?? v.rawValue ?? "").toLowerCase();
+    return con.options.some(o => s.includes(String(o).toLowerCase()));
+  }
+
+  const lo = con.min != null ? toQuantityIR(String(con.min), unitHint) : null;
+  const hi = con.max != null ? toQuantityIR(String(con.max), unitHint) : null;
+  const mode = con.mode || (v.isRange ? "cover" : "within");
+
+  if (mode === "cover") {
+    // 候选范围需覆盖要求范围：candMin <= reqMin 且 candMax >= reqMax
+    if (lo?.known && (v.canonicalMin ?? v.canonicalTyp) > lo.canonicalTyp) return false;
+    if (hi?.known && (v.canonicalMax ?? v.canonicalTyp) < hi.canonicalTyp) return false;
+    return true;
+  }
+  // within：值需落在区间内
+  if (lo?.known && (v.canonicalMin ?? v.canonicalTyp) < lo.canonicalTyp) return false;
+  if (hi?.known && (v.canonicalMax ?? v.canonicalTyp) > hi.canonicalTyp) return false;
+  return true;
+}
+
+function decideLevel(s) {
+  if (s.rejected) return { ...LEVELS.REJECTED, desc: s.rejectReason || "不满足硬约束" };
+  if (s.unverifiedPart) return { ...LEVELS.NEEDS_VERIFICATION, desc: "型号缺少权威来源证明其存在" };
+  if (s.needsVerification) return { ...LEVELS.NEEDS_VERIFICATION, desc: "硬约束参数缺失，无法验证" };
+  if (s.evidenceCoverage < 40) return { ...LEVELS.NEEDS_VERIFICATION, desc: "证据覆盖率过低" };
+  if (s.criticalFail) {
+    return s.confidence >= 55 ? { ...LEVELS.FUNCTIONAL_ALTERNATIVE, desc: "关键参数不同，需改固件/改板" }
+                              : { ...LEVELS.REDESIGN_REQUIRED, desc: "差异较大，需重新设计" };
+  }
+  if (s.confidence >= 85 && s.evidenceCoverage >= 70) {
+    // 无 Pin Map 证据时绝不给"直接替代"
+    return s.pinVerified
+      ? { ...LEVELS.DIRECT_REPLACEMENT, desc: "引脚映射已验证，可直接替换" }
+      : { ...LEVELS.COMPATIBLE_WITH_REVIEW, desc: "参数高度匹配；引脚映射未验证，需人工核对后方可直接替换" };
+  }
+  if (s.confidence >= 70) return { ...LEVELS.COMPATIBLE_WITH_REVIEW, desc: "封装兼容，软件/配置需验证" };
+  if (s.confidence >= 55) return { ...LEVELS.FUNCTIONAL_ALTERNATIVE, desc: "功能满足，需改板或改固件" };
+  if (s.confidence >= 40) return { ...LEVELS.REDESIGN_REQUIRED, desc: "仅适合新设计" };
+  return { ...LEVELS.NOT_RECOMMENDED, desc: "存在关键不兼容风险或证据不足" };
+}
+
+const DIM_KEYS = {
+  hardware:  /封装|package|引脚|pin|gpio|温度|temperature|工作电压|supply\s*voltage|输入电压/i,
+  functional:/内核|core|主频|frequency|flash|sram|通道|channel|分辨率|resolution|带宽|bandwidth|接口|interface|adc|定时器|timer|拓扑/i,
+  electrical:/失调|offset|偏置|bias|噪声|noise|cmrr|psrr|压摆|slew|rds|vgs|qg|效率|efficiency|压差|dropout|轨到轨|rail|esd|inl|snr|静态电流|quiescent/i,
+  supply:    /价格|price|库存|stock|交期|lead/i,
+};
+function dimensionOf(paramScores, params) {
+  const dims = {};
+  for (const [k, re] of Object.entries(DIM_KEYS)) {
+    const hit = paramScores.filter(ps => {
+      if (!ps.known) return false;
+      const p = params?.find(x => x.id === ps.paramId);
+      return p && re.test(`${p.name} ${p.nameEn || ""}`);
+    });
+    dims[k] = hit.length ? Math.round(hit.reduce((s, x) => s + x.score, 0) / hit.length) : null;
+  }
+  const known = paramScores.filter(p => p.known).length, total = paramScores.length || 1;
+  const ai = paramScores.filter(p => p.known && /^ai/.test(p.source || "")).length;
+  dims.risk = Math.max(0, Math.round((known / total) * 100 - (ai / total) * 25));
+  return dims;
 }
 
 module.exports = {
-  calculateScore, scoreOneParam, getReplacementLevel, calculateDimensionScores,
-  isNumericParam, DIMENSIONS, PARAM_TOLERANCE, SOURCE_CONFIDENCE,
+  calculateScore, compareParam, checkConstraint, decideLevel,
+  SOURCE_CONFIDENCE, LEVELS, fmt,
+  // 兼容旧调用
+  scoreOneParam: (origParam, candValue) => compareParam(origParam, candValue, {}),
 };
