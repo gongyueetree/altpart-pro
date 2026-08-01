@@ -35,6 +35,8 @@ const C={
 function scoreColor(s){return s>=90?C.green:s>=75?"#b8860b":s>=60?"#c2610c":"#c0392b"}
 function scoreBg(s){return s>=90?"#e8f5ef":s>=75?"#fef9ed":s>=60?"#fef3e6":"#fdeaea"}
 
+const RES_BTN={display:"inline-block",padding:"5px 10px",borderRadius:6,border:"1px solid #d4e8dc",background:"#fff",color:"#4a6b58",fontSize:11,textDecoration:"none",whiteSpace:"nowrap"};
+
 const APPLICATIONS=[
   {code:"generic",label:"通用/不限",icon:"🔧",desc:"按参数整体接近度"},
   {code:"battery",label:"电池供电/穿戴",icon:"🔋",desc:"低静态电流、轻载效率"},
@@ -639,6 +641,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
   const[view,setView]=useState("cards");
   const[detailPN,setDetailPN]=useState(null);
   const[detailRec,setDetailRec]=useState(null);
+  const onShowSelf=()=>{setDetailPN(original.partNumber);setDetailRec({manufacturer:original.manufacturer});};
   const[market,setMarket]=useState(null);   // {PN: {priceUSD1,stock,channels,source}}
   const[dragging,setDragging]=useState(null);
   const dragFrom=useRef(null);
@@ -713,6 +716,22 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
         </div>
         {original.manufacturer&&<div style={{fontSize:13,color:C.textMute,marginTop:5}}>{original.manufacturer}</div>}
         {original.description&&<div style={{fontSize:13,color:C.textSec,marginTop:3}}>{original.description}</div>}
+        {(original.datasheetUrl||original.footprintFileUrl||original.model3dUrl||original.symbolUrl||original.productUrl)&&(
+        <div style={{marginTop:12,paddingTop:12,borderTop:`1px dashed ${C.borderLight}`}}>
+          <div style={{fontSize:12,fontWeight:600,color:C.textSec,marginBottom:8}}>📦 库文件与资源</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {original.datasheetUrl&&<a href={original.datasheetUrl} target="_blank" rel="noreferrer" style={RES_BTN}>📄 Datasheet</a>}
+            {original.footprintFileUrl&&<a href={original.footprintFileUrl} target="_blank" rel="noreferrer" style={RES_BTN} title={original.footprintFileName}>📐 KiCad封装</a>}
+            {original.model3dUrl&&<a href={original.model3dUrl} target="_blank" rel="noreferrer" style={RES_BTN} title={original.model3dFileName}>🧊 3D模型(STEP)</a>}
+            {original.symbolUrl&&<a href={original.symbolUrl} target="_blank" rel="noreferrer" style={RES_BTN}>🔣 原理图符号</a>}
+            {original.productUrl&&<a href={original.productUrl} target="_blank" rel="noreferrer" style={RES_BTN}>🔗 官网产品页</a>}
+          </div>
+          <button onClick={()=>onShowSelf&&onShowSelf()}
+            style={{marginTop:8,width:"100%",padding:"8px",borderRadius:7,border:`1px solid ${C.greenMid}`,background:C.greenLight,color:C.green,fontSize:12,fontWeight:600,cursor:"pointer"}}>
+            🔍 查看图形预览（符号 / 封装 / 3D）与完整详情
+          </button>
+        </div>)}
+
         {(original.variants||[]).length>0&&(
           <button onClick={()=>setShowVariants(v=>!v)}
             style={{marginTop:10,width:"100%",padding:"7px",borderRadius:7,border:`1px solid ${C.indigoBorder}`,background:C.indigoBg,color:C.indigo,fontSize:12,fontWeight:600,cursor:"pointer"}}>
