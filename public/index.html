@@ -35,6 +35,8 @@ const C={
 function scoreColor(s){return s>=90?C.green:s>=75?"#b8860b":s>=60?"#c2610c":"#c0392b"}
 function scoreBg(s){return s>=90?"#e8f5ef":s>=75?"#fef9ed":s>=60?"#fef3e6":"#fdeaea"}
 
+const VP_BTN={width:32,height:30,borderRadius:6,border:"1px solid #b8c7dc",background:"rgba(255,255,255,.94)",color:"#29415f",fontWeight:700,cursor:"pointer",fontSize:14,lineHeight:1};
+
 const RES_BTN={display:"inline-block",padding:"5px 10px",borderRadius:6,border:"1px solid #d4e8dc",background:"#fff",color:"#4a6b58",fontSize:11,textDecoration:"none",whiteSpace:"nowrap"};
 
 const APPLICATIONS=[
@@ -358,18 +360,41 @@ function extractLegacySymbol(lib,name){
   const esc=String(name).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
   return lib.match(new RegExp(`DEF\\s+${esc}\\s+[\\s\\S]*?ENDDEF`))?.[0]||"";
 }
-// 无符号文件时按引脚数生成通用符号
-function genericSymbol(partNumber,pinCount){
-  const count=Math.max(2,pinCount||8),left=Math.ceil(count/2),right=count-left;
-  const L=["DEF PART U 0 5 Y Y 1 F N","DRAW","S -220 260 220 -260 0 1 10 F"];
-  for(let i=0;i<left;i++){const y=left===1?0:200-i*(400/(left-1));L.push(`X ~ ${i+1} -320 ${Math.round(y)} 100 R 50 50 1 1 P`);}
-  for(let i=0;i<right;i++){const y=right===1?0:-200+i*(400/(right-1));L.push(`X ~ ${left+i+1} 320 ${Math.round(y)} 100 L 50 50 1 1 P`);}
+// 无符号文件时按引脚数生成通用符号（尺寸随引脚数自适应，避免拥挤）
+function genericSymbol(partNumber,pinCount,pinNames){
+  const count=Math.max(2,pinCount||8);
+  const left=Math.ceil(count/2),right=count-left;
+  const rows=Math.max(left,right);
+  const pitch=100;                                  // 每引脚间距（KiCad 内部单位）
+  const halfH=Math.max(200,(rows-1)*pitch/2+120);   // body 高度随引脚数增长
+  const halfW=Math.max(220,Math.min(520,count*8));  // body 宽度
+  const stub=180;                                   // 引脚长度
+  const L=[`DEF PART U 0 5 Y Y 1 F N`,"DRAW",`S ${-halfW} ${halfH} ${halfW} ${-halfH} 0 1 10 F`];
+  const nm=i=>{const v=pinNames&&pinNames[i];return (v&&String(v).trim())?String(v).trim().replace(/\s+/g,"_"):"~";};
+  for(let i=0;i<left;i++){
+    const y=Math.round(left===1?0:(rows-1)*pitch/2-i*pitch);
+    L.push(`X ${nm(i)} ${i+1} ${-halfW-stub} ${y} ${stub} R 50 50 1 1 P`);
+  }
+  for(let i=0;i<right;i++){
+    const y=Math.round(right===1?0:-(rows-1)*pitch/2+i*pitch);
+    L.push(`X ${nm(left+i)} ${left+i+1} ${halfW+stub} ${y} ${stub} L 50 50 1 1 P`);
+  }
   L.push("ENDDRAW","ENDDEF");return L.join("\n");
 }
 // ── 符号渲染 ──
 function renderSymbolToSvg(txt,svg,unit,onPinClick,selectedPin){
   svg.innerHTML="";
-  const vb=svg.viewBox?.baseVal,w=vb?.width||800,h=vb?.height||520,scale=.72;
+  const vb=svg.viewBox?.baseVal,w=vb?.width||800,h=vb?.height||520;
+  // 先扫描内容范围，自适应缩放（引脚多时自动缩小，保证全部可见）
+  let bx=200,by=200;
+  {let ind=false;
+   for(const l of txt.split(/\r?\n/)){
+     if(l.trim()==="DRAW"){ind=true;continue} if(l.trim()==="ENDDRAW")break; if(!ind)continue;
+     const q=l.trim().split(/\s+/);
+     if(q[0]==="S"){bx=Math.max(bx,Math.abs(+q[1]),Math.abs(+q[3]));by=Math.max(by,Math.abs(+q[2]),Math.abs(+q[4]));}
+     else if(q[0]==="X"){const x=+q[3],y=+q[4],len=+q[5];bx=Math.max(bx,Math.abs(x)+len*0.2);by=Math.max(by,Math.abs(y)+60);}
+   }}
+  const scale=Math.min((w*0.42)/bx,(h*0.42)/by);
   const mk=(t,a={})=>{const e=document.createElementNS("http://www.w3.org/2000/svg",t);Object.entries(a).forEach(([k,v])=>v!=null&&e.setAttribute(k,v));return e;};
   const g=mk("g",{transform:`translate(${w/2} ${h/2}) scale(${scale} ${-scale})`}),tl=mk("g",{});
   svg.appendChild(g);svg.appendChild(tl);
@@ -396,7 +421,7 @@ function renderSymbolToSvg(txt,svg,unit,onPinClick,selectedPin){
       const col=sel?"#006cff":"#a40000";
       const pg=mk("g",{style:"cursor:pointer"});
       pg.appendChild(mk("line",{x1:x,y1:y,x2,y2,stroke:"transparent","stroke-width":34}));
-      pg.appendChild(mk("line",{x1:x,y1:y,x2,y2,stroke:col,"stroke-width":sel?13:8}));
+      pg.appendChild(mk("line",{x1:x,y1:y,x2,y2,stroke:col,"stroke-width":(sel?13:8)*Math.max(1,0.5/scale)}));
       pg.appendChild(mk("circle",{cx:x,cy:y,r:11,fill:"none",stroke:col,"stroke-width":3}));
       if(onPinClick)pg.addEventListener("click",e=>{e.stopPropagation();onPinClick(num);});
       g.appendChild(pg);
@@ -413,9 +438,85 @@ function renderSymbolToSvg(txt,svg,unit,onPinClick,selectedPin){
       if(ori==="R")na="start";else if(ori==="L")na="end";else nr=-90;
       const base={x:outer.x+ux*16,y:outer.y+uy*16};
       const numAt=Math.abs(dx)>=Math.abs(dy)?{x:base.x,y:base.y-17}:{x:base.x-13,y:base.y};
-      if(name&&name!=="~")mkT(name,nameAt,26,{anchor:na,rotation:nr,color:sel?"#006cff":"#006b68",weight:sel?"800":"500"});
-      if(num&&num!=="~")mkT(num,numAt,23,{anchor:Math.abs(dx)>=Math.abs(dy)?"middle":"end",color:sel?"#006cff":"#a40000",weight:sel?"800":"500"});}}
+      const fs=Math.max(9,Math.min(26,scale*38));
+      if(name&&name!=="~")mkT(name,nameAt,fs,{anchor:na,rotation:nr,color:sel?"#006cff":"#006b68",weight:sel?"800":"500"});
+      if(num&&num!=="~")mkT(num,numAt,fs*0.88,{anchor:Math.abs(dx)>=Math.abs(dy)?"middle":"end",color:sel?"#006cff":"#a40000",weight:sel?"800":"500"});}}
   return count;
+}
+
+
+// ── 3D 等轴测示意（ezPLM 提供 STEP，浏览器无法直接渲染）──
+function Model3DSVG({pkg,svgRef}){
+  const g=parsePackage(pkg);
+  if(!g)return <EmptyPreview text="无封装信息"/>;
+  const W=760,H=480,cx=W/2,cy=H/2+20;
+  const s=Math.min(200/Math.max(g.bodyW,1),200/Math.max(g.bodyH,1))*1.1;
+  const w=g.bodyW*s,d=g.bodyH*s,h=Math.max(26,w*0.16);
+  const ox=d*0.45,oy=d*0.26;
+  const top=`${cx-w/2},${cy-h} ${cx-w/2+ox},${cy-h-oy} ${cx+w/2+ox},${cy-h-oy} ${cx+w/2},${cy-h}`;
+  const right=`${cx+w/2},${cy-h} ${cx+w/2+ox},${cy-h-oy} ${cx+w/2+ox},${cy-oy} ${cx+w/2},${cy}`;
+  // 引脚示意
+  const leads=[];
+  const per=Math.max(1,Math.ceil(g.pins/(g.type==="qfn"||g.type==="qfp"?4:2)));
+  if(g.type!=="chip"&&g.type!=="bga"){
+    for(let i=0;i<per;i++){
+      const t=per===1?0.5:i/(per-1);
+      const y=cy-h*0.35-oy*t*0.8, xl=cx-w/2, xr=cx+w/2;
+      const ly=cy-h*0.2+ (d*0.5)*(t-0.5);
+      leads.push(<rect key={`l${i}`} x={xl-14} y={ly} width={14} height={5} fill="#c7ccd2" rx={1}/>);
+      leads.push(<rect key={`r${i}`} x={xr} y={ly-oy*0.15} width={14} height={5} fill="#c7ccd2" rx={1}/>);
+    }
+  }
+  return(<svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:340,background:"linear-gradient(160deg,#f7faf8,#eef3f0)",borderRadius:8,border:`1px solid ${C.borderLight}`}}>
+    <defs><linearGradient id="topg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stopColor="#4a6357"/><stop offset="100%" stopColor="#33463d"/></linearGradient></defs>
+    {[...Array(9)].map((_,i)=>(<line key={`gx${i}`} x1={cx-260+i*65} y1={cy+40} x2={cx-200+i*65} y2={cy+8} stroke="#dde5e0" strokeWidth="1"/>))}
+    <ellipse cx={cx+ox*0.5} cy={cy+10} rx={w*0.66} ry={10} fill="#00000015"/>
+    {leads}
+    <rect x={cx-w/2} y={cy-h} width={w} height={h} fill="#2c3e35"/>
+    <polygon points={top} fill="url(#topg)"/>
+    <polygon points={right} fill="#1f2d26"/>
+    <circle cx={cx-w/2+16} cy={cy-h/2} r={4.5} fill="#8fd6b4"/>
+    <text x={cx+ox*0.5} y={H-18} textAnchor="middle" fontSize={13} fill="#6b8578" fontFamily="'DM Mono',monospace">
+      {g.label} · {g.bodyW}×{g.bodyH}mm · {g.pins}pin</text>
+  </svg>);
+}
+
+function EmptyPreview({text}){
+  return<div style={{padding:"60px",textAlign:"center",color:C.textMute,background:C.bgSoft,borderRadius:8}}>
+    <div style={{fontSize:32,marginBottom:8}}>📐</div><div style={{fontSize:13}}>{text}</div></div>;
+}
+
+// ── SVG 缩放/平移视口（移植自 kicad-part-viewer）──
+function attachViewport(svg){
+  if(!svg||svg._vpBound)return svg?._vp;
+  const base={x:0,y:0,w:800,h:520};
+  let view={...base},dragging=false,pid=null,last={x:0,y:0},down={x:0,y:0},moved=false;
+  const apply=()=>svg.setAttribute("viewBox",`${view.x} ${view.y} ${view.w} ${view.h}`);
+  const reset=()=>{view={...base};apply()};
+  const zoomAt=(f,clientX,clientY)=>{
+    const r=svg.getBoundingClientRect();if(!r.width||!r.height)return;
+    const px=clientX==null?r.left+r.width/2:clientX, py=clientY==null?r.top+r.height/2:clientY;
+    const ux=view.x+(px-r.left)/r.width*view.w, uy=view.y+(py-r.top)/r.height*view.h;
+    const nw=Math.min(base.w*8,Math.max(base.w/20,view.w*f)), nh=nw*(base.h/base.w);
+    const rx=(ux-view.x)/view.w, ry=(uy-view.y)/view.h;
+    view={x:ux-rx*nw,y:uy-ry*nh,w:nw,h:nh};apply();
+  };
+  svg.addEventListener("wheel",e=>{e.preventDefault();zoomAt(e.deltaY>0?1.12:.89,e.clientX,e.clientY)},{passive:false});
+  svg.addEventListener("pointerdown",e=>{if(e.button!==0)return;dragging=true;moved=false;pid=e.pointerId;
+    down={x:e.clientX,y:e.clientY};last={...down};svg.setPointerCapture(pid);svg.style.cursor="grabbing"});
+  svg.addEventListener("pointermove",e=>{if(!dragging||e.pointerId!==pid)return;
+    if(Math.hypot(e.clientX-down.x,e.clientY-down.y)>5)moved=true;
+    const r=svg.getBoundingClientRect();
+    view.x-=(e.clientX-last.x)/r.width*view.w;view.y-=(e.clientY-last.y)/r.height*view.h;
+    last={x:e.clientX,y:e.clientY};apply()});
+  const stop=()=>{if(!dragging)return;dragging=false;try{svg.releasePointerCapture(pid)}catch{}pid=null;svg.style.cursor="grab"};
+  svg.addEventListener("pointerup",stop);svg.addEventListener("pointercancel",stop);
+  svg.addEventListener("dblclick",reset);
+  svg.style.cursor="grab";svg.style.touchAction="none";
+  apply();
+  svg._vpBound=true;svg._vp={reset,zoomIn:()=>zoomAt(.78),zoomOut:()=>zoomAt(1.28)};
+  return svg._vp;
 }
 
 // ═══ 图形预览面板：符号 / 封装 / 3D（真实 KiCad 文件优先）═══
@@ -427,7 +528,7 @@ function GraphicsPanel({d,pn}){
   const[symReal,setSymReal]=useState(false);
   const[loading,setLoading]=useState(true);
   const[pin,setPin]=useState(null);            // 选中引脚（符号↔封装联动）
-  const fpRef=useRef(null),symRef=useRef(null);
+  const fpRef=useRef(null),symRef=useRef(null),m3Ref=useRef(null);
   const pkg=d?.footprint||(d?.parameters||[]).find(p=>/封装|package/i.test(p.name))?.value;
 
   // 拉取真实 KiCad 文件（经代理），失败则合成
@@ -458,7 +559,13 @@ function GraphicsPanel({d,pn}){
           }
         }catch(e){}
       }
-      if(!st){const gp=parsePackage(pkg);st=genericSymbol(pn,gp?.pins||8);}
+      if(!st){
+        const gp=parsePackage(pkg);
+        // 若 ezPLM 参数里带引脚定义则用之，否则留空
+        const pinAttr=(d?.parameters||[]).find(x=>/引脚定义|pinout|pin\s*name/i.test(x.name));
+        const names=pinAttr?String(pinAttr.value).split(/[,，;；]/).map(t=>t.trim()):null;
+        st=genericSymbol(pn,gp?.pins||8,names);
+      }
       if(dead)return;
       setSymText(st);setSymReal(sreal);setLoading(false);
     })();
@@ -467,11 +574,15 @@ function GraphicsPanel({d,pn}){
 
   // 渲染到 SVG
   useEffect(()=>{
-    if(g==="footprint"&&fpRef.current&&fpText)renderFootprintToSvg(fpText,fpRef.current,setPin,pin);
+    if(g==="footprint"&&fpRef.current&&fpText){renderFootprintToSvg(fpText,fpRef.current,setPin,pin);attachViewport(fpRef.current);}
   },[g,fpText,pin]);
   useEffect(()=>{
-    if(g==="symbol"&&symRef.current&&symText)renderSymbolToSvg(symText,symRef.current,1,setPin,pin);
+    if(g==="symbol"&&symRef.current&&symText){renderSymbolToSvg(symText,symRef.current,1,setPin,pin);attachViewport(symRef.current);}
   },[g,symText,pin]);
+  useEffect(()=>{
+    if(g==="model3d"&&m3Ref.current)attachViewport(m3Ref.current);
+  },[g]);
+  const vp=()=>g==="footprint"?fpRef.current?._vp:g==="symbol"?symRef.current?._vp:m3Ref.current?._vp;
 
   const dl=(d?.downloads||[]).find(f=>f.type===(g==="model3d"?"model3d":g));
   const srcTag=(real,realLabel)=>(
@@ -500,9 +611,18 @@ function GraphicsPanel({d,pn}){
         {g==="model3d"&&srcTag(false,"")}
       </div>
 
-      {g==="footprint"&&<svg ref={fpRef} viewBox="0 0 800 520" style={{width:"100%",height:340,background:"#fff",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>}
-      {g==="symbol"&&<svg ref={symRef} viewBox="0 0 800 520" style={{width:"100%",height:340,background:"#fffdf5",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>}
-      {g==="model3d"&&<div style={{display:"flex",justifyContent:"center"}}><Model3DSVG pkg={pkg}/></div>}
+      <div style={{position:"relative"}}>
+        <div style={{position:"absolute",right:10,top:10,zIndex:5,display:"flex",gap:5}}>
+          <button onClick={()=>vp()?.zoomIn()} title="放大" style={VP_BTN}>＋</button>
+          <button onClick={()=>vp()?.zoomOut()} title="缩小" style={VP_BTN}>－</button>
+          <button onClick={()=>vp()?.reset()} title="复位" style={{...VP_BTN,width:"auto",padding:"0 10px",fontSize:11}}>复位</button>
+        </div>
+        {g==="footprint"&&<svg ref={fpRef} viewBox="0 0 800 520" style={{width:"100%",height:340,background:"#fff",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>}
+        {g==="symbol"&&<svg ref={symRef} viewBox="0 0 800 520" style={{width:"100%",height:340,background:"#fffdf5",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>}
+        {g==="model3d"&&<Model3DSVG pkg={pkg} svgRef={m3Ref}/>}
+        <div style={{position:"absolute",left:12,bottom:10,fontSize:10,color:C.textMute,background:"rgba(255,255,255,.85)",padding:"3px 7px",borderRadius:4,pointerEvents:"none"}}>
+          滚轮缩放 · 拖拽平移 · 双击复位</div>
+      </div>
 
       {(g==="footprint"||g==="symbol")&&<div style={{textAlign:"center",fontSize:11,color:C.textMute,marginTop:6}}>
         💡 点击引脚或焊盘可高亮对应位置{pin!=null?` · 当前选中 Pin ${pin}`:""}
