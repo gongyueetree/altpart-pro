@@ -445,6 +445,97 @@ function renderSymbolToSvg(txt,svg,unit,onPinClick,selectedPin){
 }
 
 
+
+// ── .kicad_sym 原生解析与渲染（移植自 ezplm-smt-scm）──
+// 纪律：只画能确定解析的图元；跳过的如实计数并在 UI 说明，不假装画全了
+function parseKicadSym(src){
+  const root=parseSexpr(src);
+  const tops=childrenOf(root,"symbol");
+  const top=tops[0];
+  if(!top)throw new Error("未找到 symbol 定义");
+  const name=atom(top[1])||"(未命名符号)";
+  const shapes=[],pins=[];let skipped=0;
+  const fillSolid=n=>{const f=childOf(n,"fill");const t=f?atom(childOf(f,"type")?.[1]):null;return t==="outline"||t==="color";};
+  const XY=n=>{const c=childOf(n,"at")||n;return c?{x:Number(atom(c[1]))||0,y:Number(atom(c[2]))||0,angle:Number(atom(c[3]))||0}:null;};
+  const pt=(n,k)=>{const c=childOf(n,k);return c?{x:Number(atom(c[1]))||0,y:Number(atom(c[2]))||0}:null;};
+  const units=[top,...childrenOf(top,"symbol")];
+  for(const unit of units){
+    for(const item of (Array.isArray(unit)?unit.slice(2):[])){
+      if(!Array.isArray(item))continue;
+      const h=atom(item[0]);
+      if(h==="rectangle"){const s=pt(item,"start"),e=pt(item,"end");
+        if(s&&e)shapes.push({kind:"rect",x1:s.x,y1:s.y,x2:e.x,y2:e.y,filled:fillSolid(item)});else skipped++;}
+      else if(h==="circle"){const c=pt(item,"center"),r=Number(atom(childOf(item,"radius")?.[1]));
+        if(c&&!isNaN(r))shapes.push({kind:"circle",cx:c.x,cy:c.y,r,filled:fillSolid(item)});else skipped++;}
+      else if(h==="polyline"){const ps=childOf(item,"pts");
+        const points=ps?childrenOf(ps,"xy").map(p=>({x:Number(atom(p[1]))||0,y:Number(atom(p[2]))||0})):[];
+        if(points.length>=2)shapes.push({kind:"polyline",points,filled:fillSolid(item)});else skipped++;}
+      else if(h==="arc"){const s=pt(item,"start"),m=pt(item,"mid"),e=pt(item,"end");
+        if(s&&m&&e)shapes.push({kind:"arc",start:s,mid:m,end:e});else skipped++;}
+      else if(h==="pin"){
+        const at=childOf(item,"at"),len=Number(atom(childOf(item,"length")?.[1]));
+        if(!at||isNaN(len)){skipped++;continue}
+        pins.push({x:Number(atom(at[1]))||0,y:Number(atom(at[2]))||0,angle:Number(atom(at[3]))||0,length:len,
+          name:atom(childOf(item,"name")?.[1])||"",number:atom(childOf(item,"number")?.[1])||""});}
+    }
+  }
+  if(!shapes.length&&!pins.length)throw new Error("符号中没有可渲染的图形或引脚");
+  return {name,shapes,pins,skipped};
+}
+
+// 渲染 .kicad_sym 到 SVG DOM（mm 单位，Y 轴翻转）
+function renderKicadSymTo(sym,svg,onPinClick,selPin){
+  svg.innerHTML="";
+  const b={minX:Infinity,minY:Infinity,maxX:-Infinity,maxY:-Infinity};
+  const add=(x,y)=>{b.minX=Math.min(b.minX,x);b.minY=Math.min(b.minY,y);b.maxX=Math.max(b.maxX,x);b.maxY=Math.max(b.maxY,y)};
+  for(const s of sym.shapes){
+    if(s.kind==="rect"){add(s.x1,s.y1);add(s.x2,s.y2)}
+    else if(s.kind==="circle"){add(s.cx-s.r,s.cy-s.r);add(s.cx+s.r,s.cy+s.r)}
+    else if(s.kind==="polyline"){for(const p of s.points)add(p.x,p.y)}
+    else{add(s.start.x,s.start.y);add(s.mid.x,s.mid.y);add(s.end.x,s.end.y)}}
+  for(const p of sym.pins){add(p.x,p.y);const r=p.angle*Math.PI/180;add(p.x+p.length*Math.cos(r),p.y+p.length*Math.sin(r));}
+  if(!isFinite(b.minX)){b.minX=-10;b.maxX=10;b.minY=-10;b.maxY=10}
+  const pad=6,minX=b.minX-pad,maxX=b.maxX+pad,minY=-b.maxY-pad,maxY=-b.minY+pad;
+  svg.setAttribute("viewBox",`${minX} ${minY} ${maxX-minX} ${maxY-minY}`);
+  const mk=(t,a={})=>{const e=document.createElementNS("http://www.w3.org/2000/svg",t);
+    Object.entries(a).forEach(([k,v])=>v!=null&&e.setAttribute(k,v));return e};
+  const g=mk("g",{"data-zoom-layer":"1"});svg.appendChild(g);
+  const SK="#a40000",FILL="#fffdb5",W=.254;
+  for(const s of sym.shapes){
+    let el;
+    if(s.kind==="rect")el=mk("rect",{x:Math.min(s.x1,s.x2),y:-Math.max(s.y1,s.y2),
+      width:Math.abs(s.x2-s.x1),height:Math.abs(s.y2-s.y1),fill:FILL});
+    else if(s.kind==="circle")el=mk("circle",{cx:s.cx,cy:-s.cy,r:s.r,fill:s.filled?FILL:"none"});
+    else if(s.kind==="polyline")el=mk("polyline",{points:s.points.map(p=>`${p.x},${-p.y}`).join(" "),fill:s.filled?FILL:"none"});
+    else{const cx=2*s.mid.x-(s.start.x+s.end.x)/2,cy=2*s.mid.y-(s.start.y+s.end.y)/2;
+      el=mk("path",{d:`M ${s.start.x} ${-s.start.y} Q ${cx} ${-cy} ${s.end.x} ${-s.end.y}`,fill:"none"})}
+    el.setAttribute("stroke",SK);el.setAttribute("stroke-width",W);el.setAttribute("stroke-linecap","round");
+    g.appendChild(el);}
+  for(const p of sym.pins){
+    const r=p.angle*Math.PI/180,ex=p.x+p.length*Math.cos(r),ey=p.y+p.length*Math.sin(r);
+    const sel=selPin!=null&&String(selPin)===String(p.number);
+    const col=sel?"#006cff":SK;
+    const pg=mk("g",{style:"cursor:pointer"});
+    pg.appendChild(mk("line",{x1:p.x,y1:-p.y,x2:ex,y2:-ey,stroke:"transparent","stroke-width":1.2}));
+    pg.appendChild(mk("line",{x1:p.x,y1:-p.y,x2:ex,y2:-ey,stroke:col,"stroke-width":sel?W*3:W}));
+    pg.appendChild(mk("circle",{cx:p.x,cy:-p.y,r:.35,fill:col}));
+    if(onPinClick&&p.number)pg.addEventListener("click",e=>{e.stopPropagation();onPinClick(p.number)});
+    g.appendChild(pg);
+    const inX=Math.cos(r),inY=-Math.sin(r),vert=Math.abs(inY)>Math.abs(inX);
+    if(p.number){
+      const mx=(p.x+ex)/2,my=-(p.y+ey)/2;
+      const t=vert?mk("text",{x:mx-.35,y:my,"font-size":1,"text-anchor":"middle",fill:sel?"#006cff":"#7a8a80",
+        transform:`rotate(-90 ${mx-.35} ${my})`}):mk("text",{x:mx,y:my-.45,"font-size":1,"text-anchor":"middle",fill:sel?"#006cff":"#7a8a80"});
+      t.textContent=p.number;g.appendChild(t);}
+    if(p.name&&p.name!=="~"){
+      const nx=ex+inX*.8,ny=-ey+inY*.8;
+      const anchor=vert?(inY>0?"end":"start"):(inX>0?"start":"end");
+      const t=vert?mk("text",{x:nx,y:ny+.4,"font-size":1.15,"text-anchor":anchor,fill:sel?"#006cff":"#1a2e23",
+        transform:`rotate(-90 ${nx} ${ny+.4})`}):mk("text",{x:nx,y:ny+.4,"font-size":1.15,"text-anchor":anchor,fill:sel?"#006cff":"#1a2e23"});
+      t.textContent=p.name;g.appendChild(t);}}
+  return sym.pins.length;
+}
+
 // ── 3D 等轴测示意（ezPLM 提供 STEP，浏览器无法直接渲染）──
 function Model3DSVG({pkg,svgRef}){
   const g=parsePackage(pkg);
@@ -519,6 +610,120 @@ function attachViewport(svg){
   return svg._vp;
 }
 
+
+// ═══════════════════════════════════════════════════════════
+// STEP 3D 在线预览（移植自 ezplm-smt-scm）
+// occt-import-js(OCCT WASM 内核) 解析 STEP → three.js 渲染
+// 手动触发：内核约 7.6MB + STEP 文件本身 1-3MB，不应随页面自动加载
+// ═══════════════════════════════════════════════════════════
+const OCCT_CDN="https://esm.sh/occt-import-js@0.0.23";
+const THREE_CDN="https://esm.sh/three@0.185.0";
+const ORBIT_CDN="https://esm.sh/three@0.185.0/examples/jsm/controls/OrbitControls.js";
+
+function Step3DViewer({stepUrl,fileName}){
+  const[phase,setPhase]=useState("idle");   // idle|loading|ready|error
+  const[msg,setMsg]=useState("");
+  const[meshCount,setMeshCount]=useState(0);
+  const hostRef=useRef(null);
+  const disposeRef=useRef(null);
+  useEffect(()=>()=>disposeRef.current?.(),[]);
+
+  async function load(){
+    setPhase("loading");setMsg("正在加载 3D 内核与 STEP 模型…");
+    try{
+      const [occtMod,THREE,orbitMod]=await Promise.all([
+        import(/* webpackIgnore: true */ OCCT_CDN),
+        import(/* webpackIgnore: true */ THREE_CDN),
+        import(/* webpackIgnore: true */ ORBIT_CDN),
+      ]);
+      const occtFactory=occtMod.default||occtMod;
+      const OrbitControls=orbitMod.OrbitControls;
+      setMsg("正在初始化 OCCT 内核…");
+      const occt=await occtFactory();
+
+      setMsg("正在下载 STEP 文件…");
+      const res=await fetch(proxyRes(stepUrl));
+      if(!res.ok){
+        const b=await res.json().catch(()=>null);
+        throw new Error(b?.error||`拉取 STEP 文件失败 (HTTP ${res.status})`);
+      }
+      const bytes=new Uint8Array(await res.arrayBuffer());
+
+      setMsg("正在解析几何…");
+      const result=occt.ReadStepFile(bytes,null);
+      if(!result?.success||!result.meshes?.length)throw new Error("STEP 解析成功但没有可显示的网格");
+
+      const host=hostRef.current;
+      if(!host)throw new Error("渲染容器不可用");
+      host.innerHTML="";
+      const width=host.clientWidth||600,height=380;
+      const scene=new THREE.Scene();
+      scene.background=new THREE.Color(0xf7faf8);
+      const group=new THREE.Group();
+      for(const mesh of result.meshes){
+        const geo=new THREE.BufferGeometry();
+        geo.setAttribute("position",new THREE.Float32BufferAttribute(mesh.attributes.position.array,3));
+        if(mesh.attributes.normal)geo.setAttribute("normal",new THREE.Float32BufferAttribute(mesh.attributes.normal.array,3));
+        else geo.computeVertexNormals();
+        if(mesh.index)geo.setIndex(mesh.index.array);
+        const color=mesh.color?new THREE.Color(mesh.color[0],mesh.color[1],mesh.color[2]):new THREE.Color(0x8a8f98);
+        group.add(new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color,metalness:.25,roughness:.6})));
+      }
+      const box=new THREE.Box3().setFromObject(group);
+      const center=box.getCenter(new THREE.Vector3());
+      const size=box.getSize(new THREE.Vector3()).length()||10;
+      group.position.sub(center);
+      scene.add(group);
+      scene.add(new THREE.AmbientLight(0xffffff,.75));
+      const dir=new THREE.DirectionalLight(0xffffff,1.1);dir.position.set(1,1.4,1);scene.add(dir);
+      const camera=new THREE.PerspectiveCamera(45,width/height,size/500,size*20);
+      camera.position.set(size*.7,size*.6,size*.9);
+      const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+      renderer.setSize(width,height);
+      host.appendChild(renderer.domElement);
+      const controls=new OrbitControls(camera,renderer.domElement);
+      controls.enableDamping=true;
+      let raf=0;
+      const tick=()=>{raf=requestAnimationFrame(tick);controls.update();renderer.render(scene,camera)};
+      tick();
+      const onResize=()=>{const w=host.clientWidth||width;camera.aspect=w/height;camera.updateProjectionMatrix();renderer.setSize(w,height)};
+      window.addEventListener("resize",onResize);
+      disposeRef.current=()=>{cancelAnimationFrame(raf);window.removeEventListener("resize",onResize);
+        controls.dispose();renderer.dispose();host.innerHTML="";};
+      setMeshCount(result.meshes.length);setPhase("ready");
+    }catch(e){
+      setPhase("error");
+      setMsg(e instanceof Error?e.message:String(e));
+    }
+  }
+
+  return(<div>
+    <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:10}}>
+      {(phase==="idle"||phase==="error")&&(
+        <button onClick={load} style={{padding:"9px 18px",borderRadius:8,border:"none",background:C.green,color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer"}}>
+          {phase==="error"?"重试加载 3D 模型":"▶ 加载 3D 模型"}
+        </button>)}
+      <a href={proxyRes(stepUrl)} target="_blank" rel="noreferrer" download
+        style={{padding:"8px 14px",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.textSec,fontSize:12,textDecoration:"none"}}>
+        ⬇ 下载 STEP 源文件
+      </a>
+      <span style={{fontSize:11,color:C.textMute,flex:1,minWidth:200}}>
+        {fileName?`${fileName} · `:""}需下载约 7.6MB 的 3D 内核与 STEP 文件，故手动触发。
+      </span>
+    </div>
+    {phase==="loading"&&<div style={{padding:"40px",textAlign:"center",color:C.textMute}}>
+      <div style={{width:28,height:28,border:`3px solid ${C.borderLight}`,borderTopColor:C.green,borderRadius:"50%",animation:"spin 0.8s linear infinite",margin:"0 auto 10px"}}/>
+      <div style={{fontSize:12}}>{msg}</div></div>}
+    {phase==="error"&&<div style={{padding:"12px 14px",borderRadius:8,background:"#fdeaea",border:"1px solid #f5c6c6",color:"#a0302a",fontSize:12}}>
+      3D 预览失败：{msg}。可下载 STEP 源文件用 KiCad / FreeCAD 打开。</div>}
+    {phase==="ready"&&<div style={{fontSize:11,color:C.textMute,marginBottom:6}}>
+      已渲染 {meshCount} 个网格 · 左键旋转 / 滚轮缩放 / 右键平移</div>}
+    <div ref={hostRef} style={{borderRadius:8,overflow:"hidden",
+      border:phase==="ready"?`1px solid ${C.borderLight}`:"none",minHeight:phase==="ready"?0:undefined}}/>
+  </div>);
+}
+
 // ═══ 图形预览面板：符号 / 封装 / 3D（真实 KiCad 文件优先）═══
 function GraphicsPanel({d,pn}){
   const[g,setG]=useState("footprint");
@@ -526,6 +731,8 @@ function GraphicsPanel({d,pn}){
   const[symText,setSymText]=useState(null);    // 符号 legacy 文本
   const[fpReal,setFpReal]=useState(false);
   const[symReal,setSymReal]=useState(false);
+  const[ksym,setKSym]=useState(null);
+  const[kskip,setKSkip]=useState(0);
   const[loading,setLoading]=useState(true);
   const[pin,setPin]=useState(null);            // 选中引脚（符号↔封装联动）
   const fpRef=useRef(null),symRef=useRef(null),m3Ref=useRef(null);
@@ -548,14 +755,19 @@ function GraphicsPanel({d,pn}){
       if(dead)return;
       setFpText(ft);setFpReal(real);
       // 符号
-      let st=null,sreal=false;
+      let st=null,sreal=false,ksym=null,kskip=0;
       if(d?.symbolUrl){
         try{
           const r=await fetch(proxyRes(d.symbolUrl));
           if(r.ok){
             const raw=await r.text();
-            const conv=extractLegacySymbol(raw,pn)||modernSymbolToLegacy(raw,pn)||extractLegacySymbol(raw,d?.partNumber);
-            if(conv){st=conv;sreal=true;}
+            if(raw.includes("(kicad_symbol_lib")){
+              try{const ps=parseKicadSym(raw);ksym=ps;kskip=ps.skipped;sreal=true;}catch(e){}
+            }
+            if(!ksym){
+              const conv=extractLegacySymbol(raw,pn)||modernSymbolToLegacy(raw,pn)||extractLegacySymbol(raw,d?.partNumber);
+              if(conv){st=conv;sreal=true;}
+            }
           }
         }catch(e){}
       }
@@ -567,7 +779,7 @@ function GraphicsPanel({d,pn}){
         st=genericSymbol(pn,gp?.pins||8,names);
       }
       if(dead)return;
-      setSymText(st);setSymReal(sreal);setLoading(false);
+      setSymText(st);setSymReal(sreal);setKSym(ksym);setKSkip(kskip);setLoading(false);
     })();
     return()=>{dead=true};
   },[d,pn,pkg]);
@@ -577,19 +789,22 @@ function GraphicsPanel({d,pn}){
     if(g==="footprint"&&fpRef.current&&fpText){renderFootprintToSvg(fpText,fpRef.current,setPin,pin);attachViewport(fpRef.current);}
   },[g,fpText,pin]);
   useEffect(()=>{
-    if(g==="symbol"&&symRef.current&&symText){renderSymbolToSvg(symText,symRef.current,1,setPin,pin);attachViewport(symRef.current);}
-  },[g,symText,pin]);
+    if(g!=="symbol"||!symRef.current)return;
+    if(ksym){renderKicadSymTo(ksym,symRef.current,setPin,pin);}
+    else if(symText){renderSymbolToSvg(symText,symRef.current,1,setPin,pin);}
+    attachViewport(symRef.current);
+  },[g,symText,ksym,pin]);
   useEffect(()=>{
     if(g==="model3d"&&m3Ref.current)attachViewport(m3Ref.current);
   },[g]);
   const vp=()=>g==="footprint"?fpRef.current?._vp:g==="symbol"?symRef.current?._vp:m3Ref.current?._vp;
 
   const dl=(d?.downloads||[]).find(f=>f.type===(g==="model3d"?"model3d":g));
-  const srcTag=(real,realLabel)=>(
-    <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,
-      background:real?C.greenLight:C.amberBg,color:real?C.green:C.amber,
-      border:`1px solid ${real?C.greenMid:"#f0dca0"}`}}>
-      {real?`✓ ${realLabel}`:"⚠ 依封装名合成的示意图，非精确制造数据"}</span>);
+  const srcTag=(real,realLabel)=>(real
+    ?<span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:C.greenLight,color:C.green,border:`1px solid ${C.greenMid}`}}>
+       ✓ {realLabel} · 由本系统解析绘制，字体与隐藏属性等细节可能与 KiCad 显示存在差异，以源文件为准</span>
+    :<span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:C.amberBg,color:C.amber,border:"1px solid #f0dca0"}}>
+       ⚠ 示意渲染 · ezPLM 未提供该资源，此图依封装名推算生成，非精确制造数据</span>);
 
   return(<div>
     <div style={{display:"flex",gap:6,marginBottom:12,justifyContent:"center"}}>
@@ -608,22 +823,26 @@ function GraphicsPanel({d,pn}){
       <div style={{textAlign:"center",marginBottom:8}}>
         {g==="footprint"&&srcTag(fpReal,"真实 KiCad 封装文件")}
         {g==="symbol"&&srcTag(symReal,"真实 KiCad 符号文件")}
-        {g==="model3d"&&srcTag(false,"")}
+        {g==="model3d"&&!d?.model3dUrl&&srcTag(false,"")}
       </div>
 
       <div style={{position:"relative"}}>
-        <div style={{position:"absolute",right:10,top:10,zIndex:5,display:"flex",gap:5}}>
+        <div style={{position:"absolute",right:10,top:10,zIndex:5,display:(g==="model3d"&&d?.model3dUrl)?"none":"flex",gap:5}}>
           <button onClick={()=>vp()?.zoomIn()} title="放大" style={VP_BTN}>＋</button>
           <button onClick={()=>vp()?.zoomOut()} title="缩小" style={VP_BTN}>－</button>
           <button onClick={()=>vp()?.reset()} title="复位" style={{...VP_BTN,width:"auto",padding:"0 10px",fontSize:11}}>复位</button>
         </div>
         {g==="footprint"&&<svg ref={fpRef} viewBox="0 0 800 520" style={{width:"100%",height:340,background:"#fff",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>}
         {g==="symbol"&&<svg ref={symRef} viewBox="0 0 800 520" style={{width:"100%",height:340,background:"#fffdf5",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>}
-        {g==="model3d"&&<Model3DSVG pkg={pkg} svgRef={m3Ref}/>}
-        <div style={{position:"absolute",left:12,bottom:10,fontSize:10,color:C.textMute,background:"rgba(255,255,255,.85)",padding:"3px 7px",borderRadius:4,pointerEvents:"none"}}>
-          滚轮缩放 · 拖拽平移 · 双击复位</div>
+        {g==="model3d"&&(d?.model3dUrl
+          ?<Step3DViewer stepUrl={d.model3dUrl} fileName={d.model3dFileName}/>
+          :<Model3DSVG pkg={pkg} svgRef={m3Ref}/>)}
+        {!(g==="model3d"&&d?.model3dUrl)&&<div style={{position:"absolute",left:12,bottom:10,fontSize:10,color:C.textMute,background:"rgba(255,255,255,.85)",padding:"3px 7px",borderRadius:4,pointerEvents:"none"}}>
+          滚轮缩放 · 拖拽平移 · 双击复位</div>}
       </div>
 
+      {g==="symbol"&&kskip>0&&<div style={{textAlign:"center",fontSize:11,color:C.amber,marginTop:6}}>
+        ⚠ 有 {kskip} 个图元未能识别而未渲染，符号可能不完整</div>}
       {(g==="footprint"||g==="symbol")&&<div style={{textAlign:"center",fontSize:11,color:C.textMute,marginTop:6}}>
         💡 点击引脚或焊盘可高亮对应位置{pin!=null?` · 当前选中 Pin ${pin}`:""}
         {pin!=null&&<button onClick={()=>setPin(null)} style={{marginLeft:8,padding:"1px 8px",borderRadius:4,border:`1px solid ${C.border}`,background:"#fff",fontSize:11,cursor:"pointer"}}>清除</button>}
