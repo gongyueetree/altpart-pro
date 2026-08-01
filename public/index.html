@@ -555,6 +555,89 @@ function renderKicadSymTo(sym,svg,onPinClick,selPin,unit=1){
   return pins.length;
 }
 
+
+// ── 按品类生成标准 eCAD 符号 ──
+// 电阻/电容/电感/二极管等的原理图符号是 IEC/IEEE 标准化图形，
+// 依品类生成是"准确"而非"猜测"；IC 类只能按引脚数生成矩形，属于示意。
+function detectSymbolKind(text){
+  const t=String(text||"").toLowerCase();
+  if(/\b(resistor|res\b)|电阻/.test(t)&&!/网络|array|排阻/.test(t))return "R";
+  if(/capacitor|电容/.test(t))return /电解|polarized|tantalum|钽|aluminum/.test(t)?"CP":"C";
+  if(/inductor|电感|磁珠|ferrite bead/.test(t))return "L";
+  if(/\bled\b|发光二极管/.test(t))return "LED";
+  if(/zener|稳压二极管/.test(t))return "DZ";
+  if(/schottky|肖特基/.test(t))return "DS";
+  if(/diode|二极管|整流/.test(t))return "D";
+  if(/crystal|晶振|谐振/.test(t))return "XTAL";
+  if(/fuse|保险丝|熔断/.test(t))return "F";
+  if(/mosfet|场效应/.test(t))return /p-?channel|pmos|p沟道/.test(t)?"PMOS":"NMOS";
+  if(/\bbjt\b|三极管|bipolar transistor/.test(t))return /\bpnp\b/.test(t)?"PNP":"NPN";
+  if(/operational amplifier|运算放大器|运放|op-?amp|variable gain amplifier|可变增益/.test(t))return "OPAMP";
+  return null;
+}
+
+// 生成 parseKicadSym 兼容结构（mm 单位，KiCad 惯例）
+function standardSymbol(kind,partNumber){
+  const S={name:partNumber||kind,shapes:[],pins:[],skipped:0,maxUnit:1,unitLabels:{1:"A · 单元 A"},_std:kind};
+  const P=(n,num,x,y,ang,len=2.54)=>S.pins.push({unit:1,x,y,angle:ang,length:len,name:n,number:String(num)});
+  const line=pts=>S.shapes.push({unit:1,kind:"polyline",points:pts,filled:false});
+  const rect=(x1,y1,x2,y2,f)=>S.shapes.push({unit:1,kind:"rect",x1,y1,x2,y2,filled:!!f});
+  const tri=(a,b,c,f)=>S.shapes.push({unit:1,kind:"polyline",points:[a,b,c,a],filled:!!f});
+  switch(kind){
+    case "R":
+      rect(-1.016,2.54,1.016,-2.54,false);
+      P("~",1,0,5.08,270);P("~",2,0,-5.08,90);break;
+    case "C":
+      line([{x:-2.54,y:0.508},{x:2.54,y:0.508}]);line([{x:-2.54,y:-0.508},{x:2.54,y:-0.508}]);
+      P("~",1,0,3.81,270,3.302);P("~",2,0,-3.81,90,3.302);break;
+    case "CP":
+      line([{x:-2.54,y:0.508},{x:2.54,y:0.508}]);
+      S.shapes.push({unit:1,kind:"arc",start:{x:-2.54,y:-1.27},mid:{x:0,y:-0.508},end:{x:2.54,y:-1.27}});
+      line([{x:-1.7,y:2.2},{x:-0.7,y:2.2}]);line([{x:-1.2,y:1.7},{x:-1.2,y:2.7}]);   // "+" 标记
+      P("+",1,0,3.81,270,3.302);P("-",2,0,-3.81,90,3.302);break;
+    case "L":
+      for(let i=0;i<4;i++)S.shapes.push({unit:1,kind:"arc",
+        start:{x:0,y:2.54-i*1.27},mid:{x:0.8,y:1.905-i*1.27},end:{x:0,y:1.27-i*1.27}});
+      P("~",1,0,5.08,270);P("~",2,0,-5.08,90);break;
+    case "D": case "DZ": case "DS": case "LED":
+      tri({x:-1.27,y:1.27},{x:-1.27,y:-1.27},{x:1.27,y:0},true);
+      if(kind==="DZ")line([{x:1.27,y:1.27},{x:1.27,y:-1.27},{x:1.9,y:-1.9}]);
+      else if(kind==="DS")line([{x:1.9,y:1.9},{x:1.27,y:1.27},{x:1.27,y:-1.27},{x:0.64,y:-1.9}]);
+      else line([{x:1.27,y:1.27},{x:1.27,y:-1.27}]);
+      if(kind==="LED"){line([{x:1.8,y:2.2},{x:3.2,y:3.6}]);line([{x:2.6,y:2.2},{x:4.0,y:3.6}]);}
+      P("K",1,-3.81,0,0);P("A",2,3.81,0,180);break;
+    case "XTAL":
+      rect(-0.762,1.905,0.762,-1.905,false);
+      line([{x:-1.778,y:1.905},{x:-1.778,y:-1.905}]);line([{x:1.778,y:1.905},{x:1.778,y:-1.905}]);
+      P("1",1,-3.81,0,0,2.032);P("2",2,3.81,0,180,2.032);break;
+    case "F":
+      rect(-2.54,1.016,2.54,-1.016,false);line([{x:-2.54,y:0},{x:2.54,y:0}]);
+      P("~",1,-5.08,0,0);P("~",2,5.08,0,180);break;
+    case "NPN": case "PNP":
+      line([{x:0,y:2.54},{x:0,y:-2.54}]);                       // 基极竖线
+      line([{x:0,y:1.27},{x:2.54,y:2.54}]);line([{x:0,y:-1.27},{x:2.54,y:-2.54}]);
+      S.shapes.push({unit:1,kind:"polyline",filled:true,points:kind==="NPN"
+        ?[{x:1.5,y:-1.6},{x:2.2,y:-2.3},{x:1.2,y:-2.4},{x:1.5,y:-1.6}]
+        :[{x:0.5,y:-1.9},{x:1.4,y:-1.5},{x:1.2,y:-2.5},{x:0.5,y:-1.9}]});
+      P("B",1,-2.54,0,0);P("C",2,2.54,5.08,270,2.54);P("E",3,2.54,-5.08,90,2.54);break;
+    case "NMOS": case "PMOS":
+      line([{x:-1.27,y:2.54},{x:-1.27,y:-2.54}]);               // 栅极
+      line([{x:0,y:2.54},{x:0,y:1.27}]);line([{x:0,y:0.635},{x:0,y:-0.635}]);line([{x:0,y:-1.27},{x:0,y:-2.54}]);
+      line([{x:0,y:1.905},{x:2.54,y:1.905},{x:2.54,y:5.08}]);
+      line([{x:0,y:-1.905},{x:2.54,y:-1.905},{x:2.54,y:-5.08}]);
+      S.shapes.push({unit:1,kind:"polyline",filled:true,points:kind==="NMOS"
+        ?[{x:1.0,y:0},{x:0.2,y:0.6},{x:0.2,y:-0.6},{x:1.0,y:0}]
+        :[{x:0.2,y:0},{x:1.0,y:0.6},{x:1.0,y:-0.6},{x:0.2,y:0}]});
+      P("G",1,-3.81,0,0);P("D",2,2.54,7.62,270,2.54);P("S",3,2.54,-7.62,90,2.54);break;
+    case "OPAMP":
+      tri({x:-5.08,y:5.08},{x:-5.08,y:-5.08},{x:5.08,y:0},true);
+      P("+",3,-7.62,2.54,0);P("-",2,-7.62,-2.54,0);P("~",1,7.62,0,180);
+      P("V+",8,0,7.62,270,2.54);P("V-",4,0,-7.62,90,2.54);break;
+    default: return null;
+  }
+  return S;
+}
+
 // ── 3D 等轴测示意（ezPLM 提供 STEP，浏览器无法直接渲染）──
 function Model3DSVG({pkg,svgRef,compact}){
   const g=parsePackage(pkg);
@@ -827,10 +910,16 @@ function GraphicsPanel({d,pn}){
         }catch(e){}
       }
       if(!ks&&!st){
+        // 品类标准符号（电阻/电容/二极管等图形是标准化的，生成即准确）
+        const kind=detectSymbolKind(`${d?.category||""} ${d?.description||""}`);
         const gp=parsePackage(pkg);
-        const pinAttr=(d?.parameters||[]).find(x=>/引脚定义|pinout|pin\s*name/i.test(x.name));
-        const names=pinAttr?String(pinAttr.value).split(/[,，;；]/).map(t=>t.trim()):null;
-        ks=synthSymbol(pn,gp?.pins||8,names);
+        const stdOK=kind&&(!gp?.pins||gp.pins<=3||kind==="OPAMP");   // 引脚数需与标准符号相符
+        if(stdOK)ks=standardSymbol(kind,pn);
+        if(!ks){
+          const pinAttr=(d?.parameters||[]).find(x=>/引脚定义|pinout|pin\s*name/i.test(x.name));
+          const names=pinAttr?String(pinAttr.value).split(/[,，;；]/).map(t=>t.trim()):null;
+          ks=synthSymbol(pn,gp?.pins||8,names);
+        }
       }
       if(dead)return;
       setFpText(ft);setFpReal(real);setSymText(st);setSymReal(sreal);
@@ -859,7 +948,9 @@ function GraphicsPanel({d,pn}){
     }
   },[zoomed,fpText,symText,ksym,pin,unit]);
 
-  const symOK=symReal&&!ksym?._synth;
+  const symOK=symReal&&!ksym?._synth&&!ksym?._std;
+  const symStd=!!ksym?._std;      // 品类标准符号
+  const symAI=!symOK&&!symStd;    // 按引脚数推算
   const badge=(ok,label)=>(
     <span title={ok?"由本系统解析绘制，字体与隐藏属性等细节可能与 KiCad 显示存在差异，以源文件为准"
                   :"ezPLM 未提供该资源，此图依封装名推算生成，非精确制造数据"}
@@ -897,13 +988,20 @@ function GraphicsPanel({d,pn}){
               {Array.from({length:ksym.maxUnit},(_,i)=>i+1).map(u=>(
                 <option key={u} value={u}>{ksym.unitLabels?.[u]||`单元 ${u}`}</option>))}
             </select>)}
-          {badge(symOK,"真实 .kicad_sym")}
+          {symOK?badge(true,"真实 .kicad_sym")
+           :symStd?<span title="电阻/电容/二极管等的原理图符号为 IEC/IEEE 标准图形，依品类生成，引脚定义请以 datasheet 为准"
+              style={{fontSize:10,padding:"2px 7px",borderRadius:4,whiteSpace:"nowrap",background:C.indigoBg,color:C.indigo,border:`1px solid ${C.indigoBorder}`}}>◇ 标准符号(自动生成)</span>
+           :<span title="ezPLM/分销商未提供符号文件，此图按封装引脚数推算生成，引脚定义未经验证"
+              style={{fontSize:10,padding:"2px 7px",borderRadius:4,whiteSpace:"nowrap",background:C.amberBg,color:C.amber,border:"1px solid #f0dca0"}}>⚠ AI生成(示意)</span>}
         </div>,
         <svg ref={symRef} viewBox="0 0 800 520" style={{width:"100%",height:250,background:"#fffdf5",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>,
         kskip>0?`⚠ ${kskip} 个图元未渲染`:"滚轮缩放 · 拖拽平移",
         ()=>setZoomed("symbol"))}
 
-      {card("📐 PCB 封装",badge(fpReal,"真实 .kicad_mod"),
+      {card("📐 PCB 封装",
+        fpReal?badge(true,"真实 .kicad_mod")
+        :<span title="ezPLM 未提供封装文件，此图依封装名与 JEDEC 惯例推算生成，非精确制造数据，不可直接用于生产"
+           style={{fontSize:10,padding:"2px 7px",borderRadius:4,whiteSpace:"nowrap",background:C.amberBg,color:C.amber,border:"1px solid #f0dca0"}}>⚠ AI生成(示意)</span>,
         <svg ref={fpRef} viewBox="0 0 800 520" style={{width:"100%",height:250,background:"#fff",borderRadius:8,border:`1px solid ${C.borderLight}`}}/>,
         "滚轮缩放 · 拖拽平移",
         ()=>setZoomed("footprint"))}
@@ -1001,7 +1099,7 @@ function PartDetailModal({pn,rec,onClose}){
 
       {!loading&&d?.inPLM&&(<div>
         <div style={{display:"flex",gap:2,padding:"0 24px",borderBottom:`1px solid ${C.borderLight}`}}>
-          {[["specs","技术规格"],["graphics","图形预览"],["suppliers","供应商报价"],["downloads","资源下载"],["refs","参考设计"]].map(([k,l])=>(
+          {[["specs","技术规格"],["graphics","eCAD库"],["suppliers","供应商报价"],["downloads","资源下载"],["refs","参考设计"]].map(([k,l])=>(
             <button key={k} onClick={()=>setTab(k)} style={{padding:"11px 16px",border:"none",borderBottom:`2px solid ${tab===k?C.green:"transparent"}`,background:"none",color:tab===k?C.green:C.textSec,fontSize:13,fontWeight:tab===k?700:400,cursor:"pointer"}}>
               {l}{k==="suppliers"&&offers.length>0?` (${offers.length})`:""}{k==="downloads"&&downloads.length>0?` (${downloads.length})`:""}{k==="refs"&&refs.length>0?` (${refs.length})`:""}
             </button>))}
@@ -1376,7 +1474,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
           </div>
           <button onClick={()=>onShowSelf&&onShowSelf()}
             style={{marginTop:8,width:"100%",padding:"8px",borderRadius:7,border:`1px solid ${C.greenMid}`,background:C.greenLight,color:C.green,fontSize:12,fontWeight:600,cursor:"pointer"}}>
-            🔍 查看图形预览（符号 / 封装 / 3D）与完整详情
+            🔍 查看 eCAD 库（符号 / 封装 / 3D）与完整详情
           </button>
         </div>)}
 

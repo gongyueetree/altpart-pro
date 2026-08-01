@@ -3,6 +3,7 @@
 
 const { queryLocalDB, queryLocalDBBatch, searchParts } = require("./ezplm");
 const { applyScenarioPriority, getApplicationHint } = require("./applications");
+const { getDistributorPart } = require("./distributor");
 const { analyzeComponent, getCandidates, lookupPartSpecs } = require("./gemini");
 const { fetchComponentFromAPIs } = require("./component");
 const { cache } = require("./cache");
@@ -81,7 +82,21 @@ async function resolveOriginalPart(partNumber, onProgress) {
     const originalCount = parameters.length;
     let enriched = false;
     if (parameters.length < MIN_PARAMS) {
-      onProgress?.("ezPLM 参数较少，正在联网补充关键参数...");
+      // 先用分销商权威数据补，仍不足再用 AI
+      try {
+        onProgress?.("ezPLM 参数较少，正在查询分销商数据...");
+        const dist = await getDistributorPart(localData.partNumber);
+        if (dist?.parameters?.length) {
+          const norm = t => String(t).toLowerCase().replace(/[\s\[\]()（）]/g, "");
+          const has = n => parameters.some(p => norm(p.name).includes(norm(n)) || norm(n).includes(norm(p.name)));
+          let idx = parameters.length;
+          for (const dp of dist.parameters) if (!has(dp.name)) parameters.push({ ...dp, id: `param_${++idx}` });
+          enriched = parameters.length > originalCount;
+        }
+      } catch (e) { console.warn("[Pipeline] 分销商补充失败:", e.message); }
+    }
+    if (parameters.length < MIN_PARAMS) {
+      onProgress?.("正在联网补充关键参数...");
       console.log(`[Pipeline] ${partNumber}: 参数仅${parameters.length}个，AI补充中`);
       try {
         const ai = await analyzeComponent(localData.partNumber);
@@ -125,8 +140,36 @@ async function resolveOriginalPart(partNumber, onProgress) {
     return { ...cached, _dataPath: "cache" };
   }
 
-  // 1c. AI 联网搜索（兜底）
-  onProgress?.("本地数据库未收录，正在联网搜索 Datasheet...");
+  // 1c. 分销商 API（DigiKey / Mouser）—— 厂商申报数据，权威度高于 AI
+  onProgress?.("ezPLM 未收录，正在查询分销商数据库...");
+  try {
+    const dist = await getDistributorPart(partNumber);
+    if (dist?.parameters?.length) {
+      console.log(`[Pipeline] ${partNumber}: 分销商命中 ${dist._source} (${dist.parameters.length} params)`);
+      let out = { ...dist, _dataPath: dist._source };
+      // 分销商参数仍偏少时用 AI 补充（如噪声、带宽等分销商不常列的指标）
+      if (out.parameters.length < MIN_PARAMS) {
+        try {
+          const ai = await analyzeComponent(partNumber);
+          const norm = t => String(t).toLowerCase().replace(/[\s\[\]()（）]/g, "");
+          const has = n => out.parameters.some(p => norm(p.name).includes(norm(n)) || norm(n).includes(norm(p.name)));
+          let idx = out.parameters.length;
+          for (const ap of (ai?.parameters || [])) {
+            if (!ap?.name || has(ap.name)) continue;
+            const v = ap.value;
+            if (v == null || /^n\/?a$/i.test(String(v).trim())) continue;
+            out.parameters.push({ ...ap, id: `param_${++idx}`, source: "ai_search", sourceLabel: "AI搜索", confidence: "low", verified: false });
+          }
+          if (out.parameters.length > dist.parameters.length) out._dataPath = dist._source + "+ai";
+        } catch (e) {}
+      }
+      cache.set(ck, out, 7 * 86400);
+      return out;
+    }
+  } catch (e) { console.warn("[Pipeline] 分销商查询失败:", e.message); }
+
+  // 1d. AI 联网搜索（最后兜底）
+  onProgress?.("正在联网搜索 Datasheet...");
   console.log(`[Pipeline] ${partNumber}: not in local DB, falling back to AI search`);
   const aiData = await analyzeComponent(partNumber);
   if (aiData?.parameters?.length) {
