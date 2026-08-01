@@ -374,6 +374,7 @@ function synthSymbol(partNumber,pinCount,pinNames){
   const shapes=[{kind:"rect",x1:-halfW,y1:halfH,x2:halfW,y2:-halfH,filled:true}];
   const pins=[];
   const nm=i=>{const v=pinNames&&pinNames[i];return (v&&String(v).trim())?String(v).trim():"~";};
+  // 无引脚名时保持 "~"（渲染器会隐藏），避免用编号冒充名称造成误解
   for(let i=0;i<left;i++){
     const y=left===1?0:(rows-1)*pitch/2-i*pitch;
     pins.push({x:-halfW-len,y,angle:0,length:len,name:nm(i),number:String(i+1)});   // angle 0 = 向右指入体
@@ -964,6 +965,10 @@ function GraphicsPanel({d,pn}){
               const sp=symbolFromPdfPins(pn,e.pdfPins.pins);
               if(sp){ks=sp;sSrc="pdf_datasheet";warn=e.pdfPins.warning||"";}
             }
+            if(!ks&&!st&&e.aiPinout?.pins?.length){
+              const sp=symbolFromPdfPins(pn,e.aiPinout.pins);
+              if(sp){ks=sp;sSrc="ai_pinout";warn=e.aiPinout.warning||"";}
+            }
             if(!real&&e.footprint?.text){ft=e.footprint.text;real=true;fSrc="kicad_official";ext.footprint=e.footprint.url;}
             if(e.model3d?.url)ext.model3d=e.model3d.url;
           }
@@ -1015,7 +1020,8 @@ function GraphicsPanel({d,pn}){
     kicad_official:{t:"✓ KiCad 官方库",c:C.green,bg:C.greenLight,b:C.greenMid,tip:"来自 KiCad 官方库 (gitlab.com/kicad/libraries)，符合 KLC 规范"},
     pdf_datasheet:{t:"◇ PDF数据手册生成",c:C.indigo,bg:C.indigoBg,b:C.indigoBorder,tip:"由程序解析 datasheet 引脚表生成，引脚名与类型来自原文，图形排布为自动布局，需人工确认"},
     standard:{t:"◇ 标准符号(自动生成)",c:C.indigo,bg:C.indigoBg,b:C.indigoBorder,tip:"电阻/电容/二极管等为 IEC/IEEE 标准图形，依品类生成；引脚定义请以 datasheet 为准"},
-    synth:{t:"⚠ AI生成(示意)",c:C.amber,bg:C.amberBg,b:"#f0dca0",tip:"各库均未收录，此图按封装引脚数推算生成，引脚定义未经验证，不可用于生产"},
+    ai_pinout:{t:"⚠ AI生成(引脚名待核)",c:C.amber,bg:C.amberBg,b:"#f0dca0",tip:"ezPLM / KiCad 官方库 / PDF 均未取得符号，引脚名由 AI 提供、布局由程序按 KiCad 惯例生成；引脚定义未经 datasheet 核对，务必人工确认"},
+    synth:{t:"⚠ AI生成(仅编号)",c:C.amber,bg:C.amberBg,b:"#f0dca0",tip:"各来源均未取得引脚名，此图仅按封装引脚数推算编号，不可用于生产"},
   };
   const srcBadge=k=>{const m=SRC_BADGE[k]||SRC_BADGE.synth;
     return <span title={m.tip} style={{fontSize:10,padding:"2px 7px",borderRadius:4,whiteSpace:"nowrap",background:m.bg,color:m.c,border:`1px solid ${m.b}`}}>{m.t}</span>;};

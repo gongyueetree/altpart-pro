@@ -3,6 +3,7 @@
 const { withCors } = require("../_lib/_cors");
 const { findSymbol, findFootprint, findModel3D } = require("../_lib/kicad-lib");
 const { extractPinsFromPdf } = require("../_lib/pdf-pins");
+const { getAiPinout } = require("../_lib/pinout");
 
 /** 提取基础型号（去封装/包装后缀），官方库多以基础型号命名符号 */
 function baseMpn(mpn) {
@@ -50,6 +51,14 @@ module.exports = withCors(async (req, res) => {
       console.warn("[ecad] pdf:", e.message);
       out.pdfError = e.message;
     }
+  }
+
+  // ── PDF 也拿不到 → AI 引脚定义（最后一档，仅提供语义，布局仍由程序负责）──
+  if (!out.symbol && !out.pdfPins) {
+    try {
+      const r = await getAiPinout(pn, expectedPins, footprint);
+      if (r?.pins?.length) { out.aiPinout = r; out.sources.symbol = "ai_pinout"; }
+    } catch (e) { console.warn("[ecad] ai pinout:", e.message); }
   }
 
   res.status(200).json({ success: true, ...out });
