@@ -460,42 +460,58 @@ function parseKicadSym(src){
   const fillSolid=n=>{const f=childOf(n,"fill");const t=f?atom(childOf(f,"type")?.[1]):null;return t==="outline"||t==="color";};
   const XY=n=>{const c=childOf(n,"at")||n;return c?{x:Number(atom(c[1]))||0,y:Number(atom(c[2]))||0,angle:Number(atom(c[3]))||0}:null;};
   const pt=(n,k)=>{const c=childOf(n,k);return c?{x:Number(atom(c[1]))||0,y:Number(atom(c[2]))||0}:null;};
-  const units=[top,...childrenOf(top,"symbol")];
-  for(const unit of units){
+  // KiCad 子符号命名: NAME_<unit>_<style>，unit=0 表示所有单元共用
+  const subs=childrenOf(top,"symbol");
+  const units=[[top,0],...subs.map(u=>{
+    const m=String(atom(u?.[1])||"").match(/_(\d+)_(\d+)$/);
+    return [u,m?Number(m[1]):0];
+  })];
+  let maxUnit=1;
+  for(const [unit,uno] of units){
+    maxUnit=Math.max(maxUnit,uno||1);
     for(const item of (Array.isArray(unit)?unit.slice(2):[])){
       if(!Array.isArray(item))continue;
       const h=atom(item[0]);
       if(h==="rectangle"){const s=pt(item,"start"),e=pt(item,"end");
-        if(s&&e)shapes.push({kind:"rect",x1:s.x,y1:s.y,x2:e.x,y2:e.y,filled:fillSolid(item)});else skipped++;}
+        if(s&&e)shapes.push({unit:uno,kind:"rect",x1:s.x,y1:s.y,x2:e.x,y2:e.y,filled:fillSolid(item)});else skipped++;}
       else if(h==="circle"){const c=pt(item,"center"),r=Number(atom(childOf(item,"radius")?.[1]));
-        if(c&&!isNaN(r))shapes.push({kind:"circle",cx:c.x,cy:c.y,r,filled:fillSolid(item)});else skipped++;}
+        if(c&&!isNaN(r))shapes.push({unit:uno,kind:"circle",cx:c.x,cy:c.y,r,filled:fillSolid(item)});else skipped++;}
       else if(h==="polyline"){const ps=childOf(item,"pts");
         const points=ps?childrenOf(ps,"xy").map(p=>({x:Number(atom(p[1]))||0,y:Number(atom(p[2]))||0})):[];
-        if(points.length>=2)shapes.push({kind:"polyline",points,filled:fillSolid(item)});else skipped++;}
+        if(points.length>=2)shapes.push({unit:uno,kind:"polyline",points,filled:fillSolid(item)});else skipped++;}
       else if(h==="arc"){const s=pt(item,"start"),m=pt(item,"mid"),e=pt(item,"end");
-        if(s&&m&&e)shapes.push({kind:"arc",start:s,mid:m,end:e});else skipped++;}
+        if(s&&m&&e)shapes.push({unit:uno,kind:"arc",start:s,mid:m,end:e});else skipped++;}
       else if(h==="pin"){
         const at=childOf(item,"at"),len=Number(atom(childOf(item,"length")?.[1]));
         if(!at||isNaN(len)){skipped++;continue}
-        pins.push({x:Number(atom(at[1]))||0,y:Number(atom(at[2]))||0,angle:Number(atom(at[3]))||0,length:len,
+        pins.push({unit:uno,x:Number(atom(at[1]))||0,y:Number(atom(at[2]))||0,angle:Number(atom(at[3]))||0,length:len,
           name:atom(childOf(item,"name")?.[1])||"",number:atom(childOf(item,"number")?.[1])||""});}
     }
   }
   if(!shapes.length&&!pins.length)throw new Error("符号中没有可渲染的图形或引脚");
-  return {name,shapes,pins,skipped};
+  // 单元标签：仅含电源引脚的单元标注为"电源单元"
+  const unitLabels={};
+  for(let u=1;u<=maxUnit;u++){
+    const up=pins.filter(p=>p.unit===u);
+    const isPwr=up.length>0&&up.every(p=>/^(v\+|v-|vcc|vdd|vss|vee|gnd|vs\+|vs-)$/i.test(String(p.name).trim()));
+    unitLabels[u]=`${String.fromCharCode(64+u)} · ${isPwr?"电源单元":"单元 "+String.fromCharCode(64+u)}`;
+  }
+  return {name,shapes,pins,skipped,maxUnit,unitLabels};
 }
 
 // 渲染 .kicad_sym 到 SVG DOM（mm 单位，Y 轴翻转）
-function renderKicadSymTo(sym,svg,onPinClick,selPin){
+function renderKicadSymTo(sym,svg,onPinClick,selPin,unit=1){
   svg.innerHTML="";
+  const inU=o=>!o.unit||o.unit===0||o.unit===unit;   // unit 0 = 所有单元共用
+  const shapes=(sym.shapes||[]).filter(inU), pins=(sym.pins||[]).filter(inU);
   const b={minX:Infinity,minY:Infinity,maxX:-Infinity,maxY:-Infinity};
   const add=(x,y)=>{b.minX=Math.min(b.minX,x);b.minY=Math.min(b.minY,y);b.maxX=Math.max(b.maxX,x);b.maxY=Math.max(b.maxY,y)};
-  for(const s of sym.shapes){
+  for(const s of shapes){
     if(s.kind==="rect"){add(s.x1,s.y1);add(s.x2,s.y2)}
     else if(s.kind==="circle"){add(s.cx-s.r,s.cy-s.r);add(s.cx+s.r,s.cy+s.r)}
     else if(s.kind==="polyline"){for(const p of s.points)add(p.x,p.y)}
     else{add(s.start.x,s.start.y);add(s.mid.x,s.mid.y);add(s.end.x,s.end.y)}}
-  for(const p of sym.pins){add(p.x,p.y);const r=p.angle*Math.PI/180;add(p.x+p.length*Math.cos(r),p.y+p.length*Math.sin(r));}
+  for(const p of pins){add(p.x,p.y);const r=p.angle*Math.PI/180;add(p.x+p.length*Math.cos(r),p.y+p.length*Math.sin(r));}
   if(!isFinite(b.minX)){b.minX=-10;b.maxX=10;b.minY=-10;b.maxY=10}
   const pad=6,minX=b.minX-pad,maxX=b.maxX+pad,minY=-b.maxY-pad,maxY=-b.minY+pad;
   svg.setAttribute("viewBox",`${minX} ${minY} ${maxX-minX} ${maxY-minY}`);
@@ -503,7 +519,7 @@ function renderKicadSymTo(sym,svg,onPinClick,selPin){
     Object.entries(a).forEach(([k,v])=>v!=null&&e.setAttribute(k,v));return e};
   const g=mk("g",{"data-zoom-layer":"1"});svg.appendChild(g);
   const SK="#a40000",FILL="#fffdb5",W=.254;
-  for(const s of sym.shapes){
+  for(const s of shapes){
     let el;
     if(s.kind==="rect")el=mk("rect",{x:Math.min(s.x1,s.x2),y:-Math.max(s.y1,s.y2),
       width:Math.abs(s.x2-s.x1),height:Math.abs(s.y2-s.y1),fill:FILL});
@@ -513,7 +529,7 @@ function renderKicadSymTo(sym,svg,onPinClick,selPin){
       el=mk("path",{d:`M ${s.start.x} ${-s.start.y} Q ${cx} ${-cy} ${s.end.x} ${-s.end.y}`,fill:"none"})}
     el.setAttribute("stroke",SK);el.setAttribute("stroke-width",W);el.setAttribute("stroke-linecap","round");
     g.appendChild(el);}
-  for(const p of sym.pins){
+  for(const p of pins){
     const r=p.angle*Math.PI/180,ex=p.x+p.length*Math.cos(r),ey=p.y+p.length*Math.sin(r);
     const sel=selPin!=null&&String(selPin)===String(p.number);
     const col=sel?"#006cff":SK;
@@ -535,7 +551,7 @@ function renderKicadSymTo(sym,svg,onPinClick,selPin){
       const t=vert?mk("text",{x:nx,y:ny+.4,"font-size":1.15,"text-anchor":anchor,fill:sel?"#006cff":"#1a2e23",
         transform:`rotate(-90 ${nx} ${ny+.4})`}):mk("text",{x:nx,y:ny+.4,"font-size":1.15,"text-anchor":anchor,fill:sel?"#006cff":"#1a2e23"});
       t.textContent=p.name;g.appendChild(t);}}
-  return sym.pins.length;
+  return pins.length;
 }
 
 // ── 3D 等轴测示意（ezPLM 提供 STEP，浏览器无法直接渲染）──
@@ -581,17 +597,26 @@ function EmptyPreview({text}){
 }
 
 // ── SVG 缩放/平移视口（移植自 kicad-part-viewer）──
-function attachViewport(svg){
-  if(!svg||svg._vpBound)return svg?._vp;
-  const base={x:0,y:0,w:800,h:520};
+function attachViewport(svg,rebase){
+  // base 取渲染器写入的 viewBox（符号是 mm 单位，封装也是），不能硬编码 800x520
+  const readVB=()=>{const v=(svg.getAttribute("viewBox")||"").split(/[\s,]+/).map(Number);
+    return (v.length===4&&v.every(n=>isFinite(n)))?{x:v[0],y:v[1],w:v[2],h:v[3]}:{x:0,y:0,w:800,h:520};};
+  if(svg&&svg._vpBound){
+    if(rebase){svg._vpBase=readVB();svg._vp.reset();}    // 内容换了 → 以新 viewBox 为基准
+    return svg._vp;
+  }
+  if(!svg)return null;
+  svg._vpBase=readVB();
+  const base=svg._vpBase;
   let view={...base},dragging=false,pid=null,last={x:0,y:0},down={x:0,y:0},moved=false;
   const apply=()=>svg.setAttribute("viewBox",`${view.x} ${view.y} ${view.w} ${view.h}`);
-  const reset=()=>{view={...base};apply()};
+  const reset=()=>{view={...(svg._vpBase||base)};apply()};
   const zoomAt=(f,clientX,clientY)=>{
     const r=svg.getBoundingClientRect();if(!r.width||!r.height)return;
     const px=clientX==null?r.left+r.width/2:clientX, py=clientY==null?r.top+r.height/2:clientY;
     const ux=view.x+(px-r.left)/r.width*view.w, uy=view.y+(py-r.top)/r.height*view.h;
-    const nw=Math.min(base.w*8,Math.max(base.w/20,view.w*f)), nh=nw*(base.h/base.w);
+    const B=svg._vpBase||base;
+    const nw=Math.min(B.w*8,Math.max(B.w/20,view.w*f)), nh=nw*(B.h/B.w);
     const rx=(ux-view.x)/view.w, ry=(uy-view.y)/view.h;
     view={x:ux-rx*nw,y:uy-ry*nh,w:nw,h:nh};apply();
   };
@@ -768,6 +793,7 @@ function GraphicsPanel({d,pn}){
   const[symReal,setSymReal]=useState(false);
   const[ksym,setKSym]=useState(null);
   const[kskip,setKSkip]=useState(0);
+  const[unit,setUnit]=useState(1);
   const[loading,setLoading]=useState(true);
   const[pin,setPin]=useState(null);            // 选中引脚（符号↔封装联动）
   const fpRef=useRef(null),symRef=useRef(null),m3Ref=useRef(null);
@@ -813,22 +839,22 @@ function GraphicsPanel({d,pn}){
         ksym=synthSymbol(pn,gp?.pins||8,names);   // 合成结构走同一渲染器
       }
       if(dead)return;
-      setSymText(st);setSymReal(sreal);setKSym(ksym);setKSkip(kskip);setLoading(false);
+      setSymText(st);setSymReal(sreal);setKSym(ksym);setKSkip(kskip);setUnit(1);setLoading(false);
     })();
     return()=>{dead=true};
   },[d,pn,pkg]);
 
   // 渲染到 SVG
   useEffect(()=>{
-    if(g==="footprint"&&fpRef.current&&fpText){renderFootprintToSvg(fpText,fpRef.current,setPin,pin);attachViewport(fpRef.current);}
+    if(g==="footprint"&&fpRef.current&&fpText){renderFootprintToSvg(fpText,fpRef.current,setPin,pin);attachViewport(fpRef.current,true);}
   },[g,fpText,pin]);
   useEffect(()=>{
     if(g!=="symbol"||!symRef.current)return;
-    if(ksym){renderKicadSymTo(ksym,symRef.current,setPin,pin);}
+    if(ksym){renderKicadSymTo(ksym,symRef.current,setPin,pin,unit);}
     else if(symText){renderSymbolToSvg(symText,symRef.current,1,setPin,pin);}
     else return;
-    attachViewport(symRef.current);
-  },[g,symText,ksym,pin]);
+    attachViewport(symRef.current,true);
+  },[g,symText,ksym,pin,unit]);
   useEffect(()=>{
     if(g==="model3d"&&m3Ref.current)attachViewport(m3Ref.current);
   },[g]);
@@ -855,6 +881,16 @@ function GraphicsPanel({d,pn}){
       正在加载 KiCad 库文件…</div>}
 
     {!loading&&(<div>
+      {g==="symbol"&&ksym?.maxUnit>1&&(
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginBottom:8}}>
+          <span style={{fontSize:12,color:C.textSec}}>符号单元</span>
+          <select value={unit} onChange={e=>setUnit(Number(e.target.value))}
+            style={{padding:"5px 10px",borderRadius:6,border:`1px solid ${C.border}`,fontSize:12,background:"#fff",color:C.text,cursor:"pointer"}}>
+            {Array.from({length:ksym.maxUnit},(_,i)=>i+1).map(u=>(
+              <option key={u} value={u}>{ksym.unitLabels?.[u]||`单元 ${u}`}</option>))}
+          </select>
+          <span style={{fontSize:11,color:C.textMute}}>该器件含 {ksym.maxUnit} 个单元</span>
+        </div>)}
       <div style={{textAlign:"center",marginBottom:8}}>
         {g==="footprint"&&srcTag(fpReal,"真实 KiCad 封装文件")}
         {g==="symbol"&&srcTag(symReal&&!ksym?._synth,"真实 KiCad 符号文件 (.kicad_sym)")}
