@@ -1,7 +1,7 @@
 // pipeline.js — v2.1 推荐流程编排
 // 流程: 本地库优先 → AI推荐10个 → 本地库校验 → 算法评分 → 淘汰差异大的 → 输出Top5
 
-const { queryLocalDB, queryLocalDBBatch } = require("./ezplm");
+const { queryLocalDB, queryLocalDBBatch, searchParts } = require("./ezplm");
 const { applyScenarioPriority, getApplicationHint } = require("./applications");
 const { analyzeComponent, getCandidates, lookupPartSpecs } = require("./gemini");
 const { fetchComponentFromAPIs } = require("./component");
@@ -9,6 +9,22 @@ const { cache } = require("./cache");
 
 // 淘汰阈值: 综合分低于此值的候选直接淘汰
 const ELIMINATION_THRESHOLD = 40;
+// 参数少于此数时用 AI 补齐（否则评分缺乏依据）
+const MIN_PARAMS = 5;
+
+/** 提取基础型号：去掉封装/包装后缀，用于搜同系列变体
+ *  TPS62160DGKR → TPS62160 ; TL431-1 → TL431 ; AD603ARZ-REEL7 → AD603 */
+function baseMpn(mpn) {
+  let s = String(mpn).toUpperCase().trim();
+  s = s.replace(/[-_](REEL\d*|TR|T\d?|R\d?|\d)$/i, "");         // 包装/序号后缀
+  // 主型号：字母前缀 + 数字，允许中间再跟字母数字段（保留 STM32F103 这类特征）
+  const m = s.match(/^([A-Z]{1,4}\d{2,6}(?:[A-Z]\d{2,4})?)/);
+  if (!m) return s;
+  let base = m[1];
+  // 去掉尾部单个封装/等级字母（AD9833B → AD9833），但保留 F103 这种字母+数字组合
+  base = base.replace(/(?<=\d)[A-Z]$/, "");
+  return base;
+}
 // AI 推荐数量（多推荐，后筛选）
 const AI_CANDIDATE_COUNT = 10;
 // 最终输出数量
@@ -23,8 +39,48 @@ async function resolveOriginalPart(partNumber, onProgress) {
   onProgress?.("正在查询本地数据库...");
   const localData = await queryLocalDB(partNumber);
   if (localData?.parameters?.length) {
-    console.log(`[Pipeline] ${partNumber}: found in local DB (${localData.parameters.length} params)`);
-    return { ...localData, _dataPath: "local_db" };
+    console.log(`[Pipeline] ${partNumber}: found in ezPLM (${localData.parameters.length} params)`);
+
+    // ── 参数不足时用 AI 补齐（混合模式）──
+    // ezPLM 部分物料 attributes 为空，只有封装信息，不足以支撑替代评分
+    let parameters = [...localData.parameters];
+    const originalCount = parameters.length;
+    let enriched = false;
+    if (parameters.length < MIN_PARAMS) {
+      onProgress?.("ezPLM 参数较少，正在联网补充关键参数...");
+      console.log(`[Pipeline] ${partNumber}: 参数仅${parameters.length}个，AI补充中`);
+      try {
+        const ai = await analyzeComponent(localData.partNumber);
+        if (ai?.parameters?.length) {
+          const norm = t => String(t).toLowerCase().replace(/[\s\[\]()（）]/g, "");
+          const has = n => parameters.some(p => norm(p.name).includes(norm(n)) || norm(n).includes(norm(p.name)));
+          let idx = parameters.length;
+          for (const ap of ai.parameters) {
+            if (!ap?.name || has(ap.name)) continue;
+            const v = ap.value;
+            if (v === undefined || v === null || /^n\/?a$/i.test(String(v).trim())) continue;
+            parameters.push({ ...ap, id: `param_${++idx}`, source: "ai_search", sourceLabel: "AI搜索", confidence: "low", verified: false });
+          }
+          enriched = parameters.length > originalCount;
+        }
+      } catch (e) { console.warn("[Pipeline] AI补充参数失败:", e.message); }
+    }
+
+    // ── 同系列变体（用基础型号搜，覆盖更全）──
+    let variants = [];
+    try {
+      const base = baseMpn(localData.partNumber);
+      const sibs = await searchParts(base, 30);
+      const norm = x => String(x).toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const self = norm(localData.partNumber);
+      const seen = new Set([self]);
+      variants = sibs
+        .filter(p => { const n = norm(p.partNumber); if (seen.has(n)) return false; seen.add(n); return true; })
+        .map(p => ({ pn: p.partNumber, package: p.footprint || "", note: p.description || "", ezplmId: p.ezplmId }))
+        .slice(0, 10);
+    } catch (e) { console.warn("[Pipeline] 变体查询失败:", e.message); }
+
+    return { ...localData, parameters, variants, _dataPath: enriched ? "local_db+ai" : "local_db" };
   }
 
   // 1b. 查缓存

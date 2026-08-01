@@ -144,14 +144,15 @@ function parsePackage(name){
   if(chip){const sizes={"0201":[0.6,0.3],"0402":[1.0,0.5],"0603":[1.6,0.8],"0805":[2.0,1.25],"1206":[3.2,1.6],"1210":[3.2,2.5],"2010":[5.0,2.5],"2512":[6.3,3.2]};
     const[L,W]=sizes[chip[1]];return{type:"chip",pins:2,bodyW:L,bodyH:W,label:chip[1]};}
   // QFN/DFN 四边或两边
-  if(/QFN|DFN|VQFN|WQFN/.test(s)){const n=num(/(?:QFN|DFN)-?(\d+)/)||pinOf(null)||num(/-(\d+)/)||16;
-    const sz=s.match(/(\d+(?:\.\d+)?)X(\d+(?:\.\d+)?)/);
-    return{type:"qfn",pins:n,bodyW:sz?parseFloat(sz[1]):3,bodyH:sz?parseFloat(sz[2]):3,hasEP:true,label:name};}
+  if(/QFN|DFN|VQFN|WQFN|SON/.test(s)){const n=num(/(?:QFN|DFN|SON)-?(\d+)/)||pinOf(null)||16;
+    const sz=s.match(/(\d+(?:\.\d+)?)X(\d+(?:\.\d+)?)MM/)||s.match(/(\d+(?:\.\d+)?)X(\d+(?:\.\d+)?)/);
+    return{type:"qfn",pins:n,bodyW:sz?parseFloat(sz[1]):3,bodyH:sz?parseFloat(sz[2]):3,hasEP:/EP|1EP/.test(s),label:name};}
   // QFP/LQFP/TQFP 四边引脚
   if(/QFP/.test(s)){const n=num(/QFP-?(\d+)/)||pinOf(null)||48;return{type:"qfp",pins:n,bodyW:7,bodyH:7,label:name};}
   // SOIC/SOP/SSOP/TSSOP/MSOP 两边
   if(/SOIC|SOP|SSOP|TSSOP|MSOP|VSSOP|SO-/.test(s)){const n=num(/(?:SOIC|SOP|SSOP|TSSOP|MSOP|VSSOP)-?(\d+)/)||pinOf(null)||8;
-    return{type:"soic",pins:n,bodyW:n<=8?4:n<=16?6:8,bodyH:n<=8?5:n<=16?6:8,label:name};}
+    const sz=s.match(/(\d+(?:\.\d+)?)X(\d+(?:\.\d+)?)MM/);
+    return{type:"soic",pins:n,bodyW:sz?parseFloat(sz[1]):(n<=8?4:n<=16?6:8),bodyH:sz?parseFloat(sz[2]):(n<=8?5:n<=16?6:8),label:name};}
   // SOT-23 系列
   if(/SOT-?23|SOT-?89|SOT-?223|TSOT/.test(s)){const n=num(/-(\d+)$/)||pinOf(null)||3;
     return{type:"sot",pins:n,bodyW:2.9,bodyH:1.6,label:name};}
@@ -267,7 +268,7 @@ const isImg=u=>u&&/\.(png|jpe?g|svg|gif|webp)(\?|$)/i.test(u);
 function GraphicsPanel({d,pn}){
   const[g,setG]=useState("footprint");
   const pkg=d?.footprint||(d?.parameters||[]).find(p=>/封装|package/i.test(p.name))?.value;
-  const urls={symbol:d?.symbolUrl,footprint:d?.footprintUrl,model3d:d?.model3dUrl};
+  const urls={symbol:d?.symbolUrl,footprint:d?.footprintFileUrl,model3d:d?.model3dUrl};
   const cur=urls[g==="model3d"?"model3d":g];
   const dl=(d?.downloads||[]).find(f=>f.type===(g==="model3d"?"model3d":g));
 
@@ -294,7 +295,7 @@ function GraphicsPanel({d,pn}){
     {(cur||dl)&&(<div style={{display:"flex",justifyContent:"center",gap:8}}>
       <a href={dl?.url||cur} target="_blank" rel="noreferrer"
         style={{padding:"9px 20px",borderRadius:8,background:C.green,color:"#fff",fontSize:13,fontWeight:600,textDecoration:"none"}}>
-        ⬇ 下载{g==="symbol"?"原理图符号":g==="footprint"?"PCB封装":"3D模型(STEP)"}
+        ⬇ 下载{dl?.fname||(g==="symbol"?"原理图符号":g==="footprint"?"PCB封装(KiCad)":"3D模型(STEP)")}
       </a>
     </div>)}
     {!cur&&!dl&&<div style={{textAlign:"center",fontSize:12,color:C.textMute}}>ezPLM 暂未提供该资源文件，以上为程序化生成的示意图</div>}
@@ -623,7 +624,7 @@ function CompareTable({original,recs}){
 }
 
 // ═══ 工作台（双栏）═══
-function Workbench({original,demoNote,onBack}){
+function Workbench({original,demoNote,onBack,onSwitchVariant}){
   const isNAv=v=>v==null||/^n\/?a$/i.test(String(v).trim());
   const[params,setParams]=useState((original.parameters||[]).filter(p=>!isNAv(p.value)).slice(0,10));
   const[constraints,setConstraints]=useState({});
@@ -631,6 +632,7 @@ function Workbench({original,demoNote,onBack}){
   const[mfrInput,setMfrInput]=useState("");
   const[mode,setMode]=useState("funcCompat");
   const[application,setApplication]=useState("generic");
+  const[showVariants,setShowVariants]=useState(false);
   const[phase,setPhase]=useState("idle"); // idle|loading|done
   const[result,setResult]=useState(null);
   const[note,setNote]=useState(demoNote||"");
@@ -705,11 +707,30 @@ function Workbench({original,demoNote,onBack}){
         <span style={{padding:"3px 10px",borderRadius:5,background:C.greenLight,color:C.green,fontSize:12,fontWeight:600,border:`1px solid ${C.greenMid}`}}>{original.category||"元器件"}</span>
         <div style={{display:"flex",alignItems:"center",gap:8,marginTop:10,flexWrap:"wrap"}}>
           <span style={{fontSize:21,fontWeight:700,fontFamily:"'DM Mono',monospace",color:C.text}}>{original.partNumber}</span>
-          {original._dataPath==="local_db"&&<span style={{padding:"2px 7px",borderRadius:4,background:C.greenLight,color:C.green,fontSize:10,fontWeight:600,border:`1px solid ${C.greenMid}`}}>📦 本地库命中</span>}
+          {(original._dataPath==="local_db"||original._dataPath==="local_db+ai")&&<span style={{padding:"2px 7px",borderRadius:4,background:C.greenLight,color:C.green,fontSize:10,fontWeight:600,border:`1px solid ${C.greenMid}`}}>📦 ezPLM</span>}
+          {original._dataPath==="local_db+ai"&&<span style={{padding:"2px 7px",borderRadius:4,background:C.amberBg,color:C.amber,fontSize:10,fontWeight:600,border:"1px solid #f0dca0"}}>+AI补充参数</span>}
           {original._dataPath==="ai_search"&&<span style={{padding:"2px 7px",borderRadius:4,background:C.amberBg,color:C.amber,fontSize:10,fontWeight:600,border:"1px solid #f0dca0"}}>🌐 AI搜索</span>}
         </div>
-        <div style={{fontSize:13,color:C.textMute,marginTop:4}}>{original.manufacturer}</div>
-        {original.description&&<div style={{fontSize:13,color:C.textSec,marginTop:4}}>{original.description}</div>}
+        {original.manufacturer&&<div style={{fontSize:13,color:C.textMute,marginTop:5}}>{original.manufacturer}</div>}
+        {original.description&&<div style={{fontSize:13,color:C.textSec,marginTop:3}}>{original.description}</div>}
+        {(original.variants||[]).length>0&&(
+          <button onClick={()=>setShowVariants(v=>!v)}
+            style={{marginTop:10,width:"100%",padding:"7px",borderRadius:7,border:`1px solid ${C.indigoBorder}`,background:C.indigoBg,color:C.indigo,fontSize:12,fontWeight:600,cursor:"pointer"}}>
+            🔄 该型号有 {original.variants.length} 个封装/订货变体 · {showVariants?"收起":"点击切换"}
+          </button>)}
+        {showVariants&&(<div style={{marginTop:8,maxHeight:220,overflowY:"auto"}}>
+          {original.variants.map((v,i)=>(
+            <div key={i} onClick={()=>onSwitchVariant&&onSwitchVariant(v)}
+              style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:7,border:`1px solid ${C.borderLight}`,marginBottom:5,cursor:"pointer",background:"#fff"}}
+              onMouseEnter={e=>{e.currentTarget.style.background=C.greenLight;e.currentTarget.style.borderColor=C.greenMid}}
+              onMouseLeave={e=>{e.currentTarget.style.background="#fff";e.currentTarget.style.borderColor=C.borderLight}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:600,fontFamily:"'DM Mono',monospace",color:C.green}}>{v.pn}</div>
+                {v.note&&<div style={{fontSize:10,color:C.textMute,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v.note}</div>}
+              </div>
+              {v.package&&<span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:C.indigoBg,color:C.indigo,fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>{v.package}</span>}
+            </div>))}
+        </div>)}
       </div>
 
       <div style={{borderRadius:12,border:`1.5px solid ${C.indigoBorder}`,background:"#fff",padding:"14px 16px",marginBottom:14}}>
@@ -878,7 +899,7 @@ function App(){
         }}
         onSkip={()=>{setOriginal({...variantBase,variants:[],_pkgConfirmed:false});setPage("workbench")}}
         onBack={()=>setPage("home")}/>}
-      {page==="workbench"&&original&&<Workbench original={original} demoNote={demoNote} onBack={()=>setPage("home")}/>}
+      {page==="workbench"&&original&&<Workbench key={original.partNumber} original={original} demoNote={demoNote} onBack={()=>setPage("home")} onSwitchVariant={v=>analyze(v.pn)}/>}
     </main>
     <footer style={{textAlign:"center",padding:"14px",borderTop:`1px solid ${C.borderLight}`,fontSize:12,color:C.textMute,background:"#fff"}}>
       AltPart Pro v3.0 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分

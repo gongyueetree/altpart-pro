@@ -44,21 +44,61 @@ function pickAttrs(v) {
   return out;
 }
 
-/** ezPLM 原始物料 → 标准 PartIR */
-function mapEzplmPart(raw) {
-  const id = str(raw.id) ?? str(raw.partlibId) ?? "";
-  const mpn = str(raw.mpn) ?? str(raw.model) ?? str(raw.partNumber) ?? str(raw.name) ?? id;
-  const manufacturer = str(raw.manufacturer) ?? str(raw.vendor) ?? str(raw.brand) ?? "";
-  const attrs = pickAttrs(raw.attributes ?? raw.params ?? raw.specs);
-  const description = str(raw.description) ?? str(raw.productName) ?? str(raw.title) ?? "";
-  const footprint = pickName(raw.footprint) ?? attrs["封装"] ?? attrs["Package"];
+/** 对象名取值：{id,name} | 字符串 */
+function objName(v) {
+  if (typeof v === "string") return str(v);
+  if (v && typeof v === "object") return str(v.name) ?? str(v.title) ?? str(v.label);
+  return undefined;
+}
+/** 文件对象取值：{url,fname} | 字符串url */
+function fileOf(v) {
+  if (typeof v === "string") return /^https?:\/\//.test(v) ? { url: v, fname: "" } : null;
+  if (v && typeof v === "object") {
+    const url = str(v.url) ?? str(v.link) ?? str(v.href);
+    if (url) return { url, fname: str(v.fname) ?? str(v.name) ?? "" };
+  }
+  return null;
+}
 
-  // attributes → 标准 parameters 数组
+/** 从封装名解析 mm 尺寸，如 MSOP-8_3x3mm_P0.65mm → {w:3,h:3} */
+function sizeFromFootprintName(name) {
+  if (!name) return null;
+  const m = String(name).match(/(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)mm/i);
+  return m ? { w: parseFloat(m[1]), h: parseFloat(m[2]) } : null;
+}
+
+/**
+ * ezPLM 原始物料 → 标准 PartIR
+ * 已按真实返回结构编写（manufacturer/category 为 {id,name}；
+ * footprint 含 kicadModFile/stepFile；pdf 为 {url,fname}；attributes 为 [{name,value}]）
+ */
+function mapEzplmPart(raw) {
+  const id = str(raw.id) ?? "";
+  const mpn = str(raw.mpn) ?? str(raw.model) ?? str(raw.partNumber) ?? id;
+  const manufacturer = objName(raw.manufacturer) ?? "";
+  const category = objName(raw.category) ?? "";
+  const description = str(raw.description) ?? "";
+
+  const fpObj = raw.footprint && typeof raw.footprint === "object" ? raw.footprint : null;
+  const footprint = objName(raw.footprint);
+  const kicadMod = fileOf(fpObj?.kicadModFile);
+  const stepFile = fileOf(fpObj?.stepFile);
+  const symbolFile = fileOf(raw.symbol);           // 目前官方多为 null
+  const pdfFile = fileOf(raw.pdf) ?? fileOf(raw.datasheet);
+
+  // attributes: [{name,value}] → 标准 parameters
   const parameters = [];
   let i = 0;
-  for (const [k, v] of Object.entries(attrs)) {
+  const attrs = Array.isArray(raw.attributes) ? raw.attributes : [];
+  for (const a of attrs) {
+    const name = str(a?.name), value = str(a?.value) ?? (typeof a?.value === "number" ? String(a.value) : undefined);
+    if (!name || !value) continue;
+    // 参数名里的单位提取：Iq[典型值](µA) → unit=µA
+    const um = name.match(/\(([^)]+)\)\s*$/);
     parameters.push({
-      id: `param_${++i}`, name: k, nameEn: k, value: v, unit: "",
+      id: `param_${++i}`,
+      name, nameEn: name,
+      value, unit: um ? um[1] : "",
       source: "ezplm", sourceLabel: "ezPLM", confidence: "high", verified: true,
     });
   }
@@ -67,17 +107,20 @@ function mapEzplmPart(raw) {
       source: "ezplm", sourceLabel: "ezPLM", confidence: "high", verified: true });
   }
 
+  const size = sizeFromFootprintName(footprint);
+
   return {
-    partNumber: mpn, ezplmId: id, manufacturer,
-    category: str(raw.category) ?? "", description,
+    partNumber: mpn, ezplmId: id, manufacturer, category, description,
     parameters,
-    footprint,
-    datasheetUrl: pickUrl(raw.pdf) ?? pickUrl(raw.datasheet),
+    footprint, footprintSize: size,
+    datasheetUrl: pdfFile?.url,
+    productUrl: str(raw.officialUrl),
+    symbolUrl: symbolFile?.url || null,
+    footprintFileUrl: kicadMod?.url || null,
+    footprintFileName: kicadMod?.fname || "",
+    model3dUrl: stepFile?.url || null,
+    model3dFileName: stepFile?.fname || "",
     imageUrl: pickUrl(raw.image) ?? pickUrl(raw.photo),
-    symbolUrl: pickUrl(raw.symbol),
-    footprintUrl: pickUrl(raw.footprintFile) ?? pickUrl(raw.footprint3d),
-    model3dUrl: pickUrl(raw.model3d) ?? pickUrl(raw.step),
-    productUrl: pickUrl(raw.link) ?? pickUrl(raw.url),
     approved: true,
     _source: "ezplm",
   };
@@ -167,10 +210,10 @@ async function queryPartDetail(partNumber) {
     ...base,
     referenceDesigns,
     downloads: [
-      base.datasheetUrl && { type: "datasheet", label: "Datasheet (PDF)", url: base.datasheetUrl },
-      base.symbolUrl && { type: "symbol", label: "原理图符号", url: base.symbolUrl },
-      base.footprintUrl && { type: "footprint", label: "PCB 封装", url: base.footprintUrl },
-      base.model3dUrl && { type: "model3d", label: "3D 模型 (STEP)", url: base.model3dUrl },
+      base.datasheetUrl && { type: "datasheet", label: "Datasheet (PDF)", url: base.datasheetUrl, fname: "" },
+      base.symbolUrl && { type: "symbol", label: "原理图符号", url: base.symbolUrl, fname: "" },
+      base.footprintFileUrl && { type: "footprint", label: `PCB 封装 (KiCad)`, url: base.footprintFileUrl, fname: base.footprintFileName },
+      base.model3dUrl && { type: "model3d", label: "3D 模型 (STEP)", url: base.model3dUrl, fname: base.model3dFileName },
     ].filter(Boolean),
     suppliers: [],   // 由 /api/v2/market 提供实时价格库存
     inventory: null,
