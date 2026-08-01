@@ -52,6 +52,12 @@ console.log("\n【2】ezPLM 真实 API");
   const p = await j("/api/ezplm?path=parts&keyword=TPS62160&pageSize=5");
   const items = p.body?.data || [];
   check("parts 查询返回数据", p.status === 200 && items.length > 0, `status=${p.status} 条数=${items.length}`);
+  if (p.status !== 200) {
+    console.log(`    ↳ kind=${p.body?.kind} upstreamStatus=${p.body?.upstreamStatus}`);
+    console.log(`    ↳ error: ${String(p.body?.error).slice(0, 200)}`);
+    console.log(`    ↳ hint: ${p.body?.hint}`);
+    if (p.body?.upstreamBody) console.log(`    ↳ upstreamBody: ${String(p.body.upstreamBody).slice(0, 200)}`);
+  }
   if (items.length) {
     const it = items[0];
     check("返回含 mpn", !!it.mpn, JSON.stringify(Object.keys(it)).slice(0, 120));
