@@ -83,3 +83,48 @@
 8. PDF 提取缓存键与全文索引
 9. 文件代理流式传输
 10. 前端渐进式模块化（先抽 services/ 与 hooks/，不做全量重写）
+
+---
+
+# v6.2.0 轮次（针对 2026-08-01 线上回归测试）
+
+## ✅ 本轮完成（均有测试）
+
+| 提示词章节 | 修复内容 | 测试 |
+|---|---|---|
+| §3 推荐错误语义 | 10 个业务错误码 + HTTP status 映射 + requestId + stage + retryable；上游异常经 `cause` 正确分类；阶段计时 | `recommend-contract.test.js` 15 例 |
+| §3.2 前端 | 检查 `r.ok` 与 Content-Type；错误对象逐字段读取（消除 `[object Object]`）；45s AbortController 超时；防重复点击并发 | — |
+| §4 虚构型号 | AI 结果一律 `unverified`；`looksFictitious()` 识别；analyze 返回 404/422 且不进工作台、不写缓存 | `fictitious-part.test.js` 6 例 |
+| §5 身份错位 | `ResolvedPartIdentity`、`splitMpn`、`guardResource`、`identityCacheKey`（含厂商+封装+canonical） | `part-identity.test.js` 37 例 |
+| §6 引脚高亮 | `normPin()` 规范化（数字/EP/PAD/NC）；符号↔封装用同一 key；再点取消；高对比度光晕；`role=button`+键盘 | — |
+| §8 场景重排 | `reorderByApplication()` 真实重排；`orderSource` 追踪；用户拖拽后不被覆盖 + 「恢复场景默认排序」；只在真变化时显示提示 | — |
+| §9.2 约束校验 | `validateConstraint()`：min>max 拒绝、离散参数拒绝数值范围、端点必须为数值；后端二次校验返回 400 | `constraint-validation.test.js` 12 例 |
+| §9.3 厂商去重 | 前后端 canonical 别名归一；删除按钮改 `button`+aria-label | 5 例 |
+
+**测试 166 → 238 例，全部通过。**
+
+## ❌ 本轮未完成（下一轮）
+
+| 章节 | 项 | 原因 |
+|---|---|---|
+| §5 | 把 identity 接入 ezPLM/详情/eCAD 全链路 | 模块已建好且有测试，但 `_lib/ezplm.js`、`part-detail`、eCAD 仍用旧的按型号缓存键；接入需改动多处调用点 |
+| §7 | 统一 `DownloadButton` 组件 | 需前端组件化 |
+| §10 | 低成本真实采购模式（地区/数量/包装/币种/交期） | 需前端表单 + 分销商分区域报价接口 |
+| §11.1 | base device 去重（VCA2615Y/2K5 系列占满 Top3） | 需接入 `splitMpn().baseDevice` 到 pipeline 排序 |
+| §11.2 | `authoritativeEvidenceCoverage` 与 `fieldCoverage` 分离 | 需改评分输出结构与前端展示 |
+| §12 | Mouser「交期 441 天」字段映射核查 | 需真实 API 响应样本 |
+| §13 | AD8331 官方 PDF 证据化（页码/表格区域/hash） | PDF 规则已有，缺证据实体与 UI 标注 |
+| §14 | 构建时 JSX 编译、模块拆分、a11y | 工作量大，需独立轮次 |
+| §15 | 分阶段加载提示、Server-Timing、取消请求 | 后端已有 timings，前端未展示 |
+| §16 | WebGL capability 预检 | — |
+| §17.1 | Playwright E2E（19 项） | 沙箱无浏览器环境 |
+| §17.3 | Golden Set fixtures | — |
+
+## 🔒 仍未验证（需真实环境）
+
+- 五种模式在真实 ezPLM/Gemini 下的实际表现（沙箱无密钥、网络不通上游）
+- 浏览器端下载事件（Blob/MD/CSV/kicad_sym）
+- 引脚高亮的真实 DOM 表现（需浏览器 E2E）
+- LM358ADR 端到端身份一致性（需真实上游数据）
+
+建议部署后运行 `npm run verify:live <url>` 覆盖后端部分。

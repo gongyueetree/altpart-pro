@@ -50,6 +50,38 @@ const FLOW_ARROW={flexShrink:0,color:"#8aa698"};
 
 const RES_BTN={display:"inline-block",padding:"5px 10px",borderRadius:6,border:"1px solid #d4e8dc",background:"#fff",color:"#4a6b58",fontSize:11,textDecoration:"none",whiteSpace:"nowrap"};
 
+// 场景优先关键词（与后端 applications.js 保持一致；前端据此真实重排，而非只改文案）
+const APP_PRIORITY={
+  generic:[],
+  battery:["静态电流","quiescent","iq","效率","efficiency","关断","工作电压","supply"],
+  industrial:["工作温度","temperature","工作电压","输入电压","esd","psrr","封装"],
+  automotive:["工作温度","temperature","认证","qualification","aec","esd","工作电压"],
+  consumer:["参考价格","price","封装","package","效率"],
+  precision:["噪声","noise","失调","offset","漂移","drift","inl","分辨率","cmrr","精度"],
+  rf:["带宽","bandwidth","gbw","噪声","noise","增益","gain","压摆率","slew"],
+  medical:["噪声","noise","漏电流","leakage","工作温度","失调"],
+  education:["参考价格","price","封装"],
+};
+const APP_HARD={
+  battery:["静态电流","工作电压"], industrial:["工作温度"], automotive:["工作温度"],
+  precision:["噪声","失调"], rf:["带宽"],
+};
+
+/** 按场景重排参数：命中关键词的提前，保持其余相对顺序 */
+function reorderByApplication(params,appCode){
+  const hints=APP_PRIORITY[appCode]||[];
+  if(!hints.length)return params.slice();
+  const rank=p=>{
+    const t=`${p.name||""} ${p.nameEn||""}`.toLowerCase();
+    const i=hints.findIndex(h=>t.includes(String(h).toLowerCase()));
+    return i<0?999:i;
+  };
+  return params.map((p,i)=>({p,i})).sort((a,b)=>{
+    const ra=rank(a.p),rb=rank(b.p);
+    return ra!==rb?ra-rb:a.i-b.i;
+  }).map(x=>x.p);
+}
+
 const APPLICATIONS=[
   {code:"generic",label:"通用/不限",icon:"🔧",desc:"按参数整体接近度"},
   {code:"battery",label:"电池供电/穿戴",icon:"🔋",desc:"低静态电流、轻载效率"},
@@ -181,6 +213,26 @@ function parsePackage(name){
 // 架构要点：无真实文件时生成 .kicad_mod 文本，与真实文件走同一条渲染管线
 // ═══════════════════════════════════════════════════════════
 
+// 引脚号规范化：符号写 "3"、封装写 3 或 " 3 "，EP/PAD/NC 大小写不一，必须归一后比较
+// 厂商别名归一：线上曾允许同时添加 "Texas Instruments" 与 "texas instruments"
+const MFR_ALIAS=[[/texas\s*instruments|^ti$/i,"TEXAS_INSTRUMENTS"],[/analog\s*devices|^adi$|linear\s*tech/i,"ANALOG_DEVICES"],
+ [/stmicro|^st$/i,"STMICROELECTRONICS"],[/microchip|^atmel$/i,"MICROCHIP"],[/nxp|freescale/i,"NXP"],
+ [/infineon|international\s*rectifier|cypress/i,"INFINEON"],[/on\s*semi|onsemi|fairchild/i,"ONSEMI"],
+ [/maxim/i,"MAXIM"],[/renesas|intersil/i,"RENESAS"],[/兆易创新|gigadevice/i,"GIGADEVICE"],[/沁恒|^wch$/i,"WCH"],
+ [/圣邦微|sgmicro/i,"SGMICRO"],[/思瑞浦|3peak/i,"3PEAK"],[/极海|geehy/i,"GEEHY"],[/矽力杰|silergy/i,"SILERGY"]];
+function canonMfr(n){const s=String(n||"").trim();if(!s)return "";
+  for(const[re,id]of MFR_ALIAS)if(re.test(s))return id;
+  return s.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,24);}
+
+function normPin(v){
+  const s=String(v??"").trim().toUpperCase();
+  if(!s)return "";
+  if(/^(EP|E\.?P\.?|PAD|THERMAL(PAD)?|EXPOSED(PAD)?)$/.test(s))return "EP";
+  if(/^(NC|N\.?C\.?|DNC|NOCONNECT)$/.test(s))return "NC";
+  return s.replace(/^0+(?=\d)/,"");
+}
+const samePin=(a,b)=>{const x=normPin(a),y=normPin(b);return !!x&&x===y;};
+
 const proxyRes=u=>(!u||typeof u!=="string")?"":(/^https?:\/\//i.test(u)?`/api/ezplm-resource?url=${encodeURIComponent(u)}`:u);
 
 // ── S-expression 块提取（容错强于完整解析器，适合 kicad_mod）──
@@ -289,17 +341,26 @@ function renderFootprintToSvg(txt,svg,onPinClick,selectedPin){
     el.setAttribute("fill","none");el.setAttribute("stroke",st.s);el.setAttribute("stroke-width",st.wd);
     if(st.d)el.setAttribute("stroke-dasharray",st.d);g.appendChild(el);});
   pads.forEach(p=>{
-    const sel=selectedPin!=null&&String(selectedPin)===String(p.num);
+    const sel=samePin(selectedPin,p.num);
     const pg=mk("g",{transform:`translate(${p.x} ${p.y}) rotate(${p.rot})`,style:"cursor:pointer"});
     const round=p.shape==="circle"||p.shape==="oval";
     const shape=round?mk("ellipse",{cx:0,cy:0,rx:p.w/2,ry:p.h/2}):mk("rect",{x:-p.w/2,y:-p.h/2,width:p.w,height:p.h,rx:p.shape.includes("round")?.12:0});
     shape.setAttribute("fill",sel?"#006cff":(p.num==="1"?"#d77b31":"#d69f36"));
-    shape.setAttribute("stroke",sel?"#003e9f":"#8c6419");shape.setAttribute("stroke-width",sel?".11":".04");
+    shape.setAttribute("stroke",sel?"#0047c7":"#8c6419");shape.setAttribute("stroke-width",sel?".22":".04");
+    if(sel){const halo=mk("rect",{x:-p.w/2-.22,y:-p.h/2-.22,width:p.w+.44,height:p.h+.44,rx:.15,
+      fill:"none",stroke:"#0047c7","stroke-width":".08","stroke-dasharray":".18 .12"});
+      pg.appendChild(halo);}
     pg.appendChild(shape);
     const t=mk("text",{x:0,y:0,transform:`rotate(${-p.rot})`,"text-anchor":"middle","dominant-baseline":"middle",
       "font-size":Math.max(.28,Math.min(p.w,p.h)*.42),fill:"#fff","font-family":"Arial","font-weight":sel?"900":"700"});
     t.textContent=p.num;pg.appendChild(t);
-    if(onPinClick)pg.addEventListener("click",e=>{e.stopPropagation();onPinClick(p.num);});
+    if(onPinClick){
+      pg.setAttribute("role","button");pg.setAttribute("tabindex","0");
+      pg.setAttribute("aria-label",`焊盘 ${p.num}`);
+      const fire=e=>{e.stopPropagation();onPinClick(normPin(p.num));};
+      pg.addEventListener("click",fire);
+      pg.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" ")fire(e);});
+    }
     g.appendChild(pg);});
   const legend=mk("g",{transform:`translate(22 ${h-22})`});
   [["#d6b937","F.SilkS"],["#db6a2b","F.CrtYd"],["#6c7d93","F.Fab"],["#d77b31","Pin 1"]].forEach((it,i)=>{
@@ -431,7 +492,7 @@ function renderSymbolToSvg(txt,svg,unit,onPinClick,selectedPin){
       count++;
       const name=p[1],num=p[2],x=+p[3],y=+p[4],len=+p[5],ori=p[6];let x2=x,y2=y;
       if(ori==="R")x2+=len;if(ori==="L")x2-=len;if(ori==="U")y2+=len;if(ori==="D")y2-=len;
-      const sel=selectedPin!=null&&String(selectedPin)===String(num);
+      const sel=samePin(selectedPin,num);
       const col=sel?"#006cff":"#a40000";
       const pg=mk("g",{style:"cursor:pointer"});
       pg.appendChild(mk("line",{x1:x,y1:y,x2,y2,stroke:"transparent","stroke-width":34}));
@@ -543,13 +604,20 @@ function renderKicadSymTo(sym,svg,onPinClick,selPin,unit=1){
     g.appendChild(el);}
   for(const p of pins){
     const r=p.angle*Math.PI/180,ex=p.x+p.length*Math.cos(r),ey=p.y+p.length*Math.sin(r);
-    const sel=selPin!=null&&String(selPin)===String(p.number);
+    const sel=samePin(selPin,p.number);
     const col=sel?"#006cff":SK;
     const pg=mk("g",{style:"cursor:pointer"});
     pg.appendChild(mk("line",{x1:p.x,y1:-p.y,x2:ex,y2:-ey,stroke:"transparent","stroke-width":1.2}));
-    pg.appendChild(mk("line",{x1:p.x,y1:-p.y,x2:ex,y2:-ey,stroke:col,"stroke-width":sel?W*3:W}));
-    pg.appendChild(mk("circle",{cx:p.x,cy:-p.y,r:.35,fill:col}));
-    if(onPinClick&&p.number)pg.addEventListener("click",e=>{e.stopPropagation();onPinClick(p.number)});
+    pg.appendChild(mk("line",{x1:p.x,y1:-p.y,x2:ex,y2:-ey,stroke:col,"stroke-width":sel?W*4:W}));
+    pg.appendChild(mk("circle",{cx:p.x,cy:-p.y,r:sel?.6:.35,fill:col}));
+    if(sel)pg.appendChild(mk("circle",{cx:p.x,cy:-p.y,r:1.1,fill:"none",stroke:"#0047c7","stroke-width":.18}));
+    if(onPinClick&&p.number){
+      pg.setAttribute("role","button");pg.setAttribute("tabindex","0");
+      pg.setAttribute("aria-label",`引脚 ${p.number}${p.name&&p.name!=="~"?" "+p.name:""}`);
+      const fire=e=>{e.stopPropagation();onPinClick(normPin(p.number));};
+      pg.addEventListener("click",fire);
+      pg.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" ")fire(e);});
+    }
     g.appendChild(pg);
     const inX=Math.cos(r),inY=-Math.sin(r),vert=Math.abs(inY)>Math.abs(inX);
     if(p.number){
@@ -1006,6 +1074,7 @@ function GraphicsPanel({d,pn}){
   const[unit,setUnit]=useState(1);
   const[loading,setLoading]=useState(!cached);
   const[pin,setPin]=useState(null);
+  const togglePin=v=>setPin(prev=>samePin(prev,v)?null:normPin(v));
   const[zoomed,setZoomed]=useState(null);
   const[srcSym,setSrcSym]=useState(cached?.srcSym??"");
   const[srcFp,setSrcFp]=useState(cached?.srcFp??"");
@@ -1096,20 +1165,20 @@ function GraphicsPanel({d,pn}){
 
   // 三栏小图渲染
   useEffect(()=>{
-    if(!loading&&fpRef.current&&fpText){renderFootprintToSvg(fpText,fpRef.current,setPin,pin);attachViewport(fpRef.current,true);}
+    if(!loading&&fpRef.current&&fpText){renderFootprintToSvg(fpText,fpRef.current,togglePin,pin);attachViewport(fpRef.current,true);}
   },[loading,fpText,pin]);
   useEffect(()=>{
     if(loading||!symRef.current)return;
-    if(ksym)renderKicadSymTo(ksym,symRef.current,setPin,pin,unit);
-    else if(symText)renderSymbolToSvg(symText,symRef.current,1,setPin,pin);
+    if(ksym)renderKicadSymTo(ksym,symRef.current,togglePin,pin,unit);
+    else if(symText)renderSymbolToSvg(symText,symRef.current,1,togglePin,pin);
     attachViewport(symRef.current,true);
   },[loading,symText,ksym,pin,unit]);
   // 放大视图渲染
   useEffect(()=>{
-    if(zoomed==="footprint"&&bigFpRef.current&&fpText){renderFootprintToSvg(fpText,bigFpRef.current,setPin,pin);attachViewport(bigFpRef.current,true);}
+    if(zoomed==="footprint"&&bigFpRef.current&&fpText){renderFootprintToSvg(fpText,bigFpRef.current,togglePin,pin);attachViewport(bigFpRef.current,true);}
     if(zoomed==="symbol"&&bigSymRef.current){
-      if(ksym)renderKicadSymTo(ksym,bigSymRef.current,setPin,pin,unit);
-      else if(symText)renderSymbolToSvg(symText,bigSymRef.current,1,setPin,pin);
+      if(ksym)renderKicadSymTo(ksym,bigSymRef.current,togglePin,pin,unit);
+      else if(symText)renderSymbolToSvg(symText,bigSymRef.current,1,togglePin,pin);
       attachViewport(bigSymRef.current,true);
     }
   },[zoomed,fpText,symText,ksym,pin,unit]);
@@ -1612,6 +1681,8 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
   const[mode,setMode]=useState("funcCompat");
   const[application,setApplication]=useState("generic");
   const[showVariants,setShowVariants]=useState(false);
+  const[orderSource,setOrderSource]=useState("default");   // default | scenario | user_override
+  const[reorderNote,setReorderNote]=useState("");
   const[phase,setPhase]=useState("idle"); // idle|loading|done
   const[result,setResult]=useState(null);
   const[note,setNote]=useState(demoNote||"");
@@ -1631,9 +1702,17 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
     if(from==null||from===i)return void setDragging(null);
     const next=[...params];const[m]=next.splice(from,1);next.splice(i,0,m);
     setParams(next);setDragging(null);dragFrom.current=null;
+    setOrderSource("user_override");
+    setReorderNote("已按你手动调整的顺序提交；场景切换不会覆盖它");
   };
   const setCon=(pid,c)=>setConstraints(prev=>{const n={...prev};if(c)n[pid]=c;else delete n[pid];return n;});
-  const addMfr=()=>{const v=mfrInput.trim();if(v&&!mfrs.includes(v)){setMfrs([...mfrs,v]);}setMfrInput("");};
+  const addMfr=()=>{
+    const v=mfrInput.trim();
+    if(!v){setMfrInput("");return;}
+    const key=canonMfr(v);
+    if(mfrs.some(x=>canonMfr(x)===key)){setMfrInput("");return;}   // 大小写/别名去重
+    setMfrs([...mfrs,v]);setMfrInput("");
+  };
   const mfrSuggest=mfrInput?POPULAR_MFRS.filter(m=>m.toLowerCase().includes(mfrInput.toLowerCase())&&!mfrs.includes(m)).slice(0,5):[];
 
   const fetchMarket=async(pns)=>{
@@ -1646,24 +1725,63 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
     }catch(e){setMarket({});}
   };
 
+  const ERR_TEXT={
+    NO_VERIFIED_CANDIDATES:"没有找到满足当前模式与约束的已验证候选",
+    PIN_EVIDENCE_MISSING:"该模式需要引脚映射证据，当前候选均无法验证引脚",
+    PART_UNVERIFIED:"原型号未经权威来源验证，无法推荐",
+    VARIANT_NOT_RESOLVED:"未能确定具体订货型号，请先选择封装变体",
+    INVALID_REQUEST:"请求参数有误",
+    UPSTREAM_TIMEOUT:"上游服务超时",
+    UPSTREAM_UNAVAILABLE:"上游服务不可用",
+    AI_INVALID_RESPONSE:"AI 返回格式异常",
+    RATE_LIMITED:"调用过于频繁",
+    INTERNAL_ERROR:"服务内部错误",
+  };
+
   const runRecommend=async()=>{
+    if(phase==="loading")return;                        // 防重复点击造成并发重复请求
     setPhase("loading");setNote("");
+    const ctl=new AbortController();
+    const timer=setTimeout(()=>ctl.abort(),45000);      // 可配置超时，超时后允许安全重试
     try{
       const r=await fetch("/api/v2/recommend",{method:"POST",headers:{"Content-Type":"application/json"},
+        signal:ctl.signal,
         body:JSON.stringify({partNumber:original.partNumber,mode,application,preferredManufacturers:mfrs,constraints,
-          priorityOrder:params.map(p=>p.id),original:original._dataPath==="demo"?undefined:original})});
-      const d=await r.json().catch(()=>null);
-      if(d&&d.success&&d.recommendations?.length){
+          priorityOrder:params.map(p=>p.id),orderSource,original:original._dataPath==="demo"?undefined:original})});
+      clearTimeout(timer);
+      const ct=r.headers.get("content-type")||"";
+      const d=ct.includes("json")?await r.json().catch(()=>null):null;
+
+      if(r.ok&&d&&d.success&&d.recommendations?.length){
         setResult(d);setPhase("done");
-      }else if(original.partNumber==="STM32F103C8T6"&&original._dataPath==="demo"){
+        return;
+      }
+      if(original.partNumber==="STM32F103C8T6"&&original._dataPath==="demo"){
         setResult({recommendations:MOCK_RECS,eliminated:[]});
         setNote("演示模式数据");setPhase("done");
-      }else{
-        setNote(d&&d.success===false?`推荐失败：${d.error||"未知错误"}，请点击按钮重试`:"推荐失败，请稍后重试");
-        setPhase("idle");
+        return;
       }
-    }catch(e){
-      setNote("网络错误或超时，请点击按钮重试");setPhase("idle");
+      // 业务错误：error 是对象，必须逐字段读取，不能直接拼进模板串（否则显示 [object Object]）
+      const e=d&&d.error;
+      if(e&&typeof e==="object"){
+        const n=e.details?.eliminatedCount;
+        setNote(`${ERR_TEXT[e.code]||e.message||"推荐失败"}`+
+          `${typeof n==="number"?`（已排除 ${n} 个候选，见下方淘汰列表）`:""}`+
+          `${e.retryable?" · 可重试":""} · ${e.code||""} · ${e.requestId||""}`);
+        setResult(e.details?.eliminated?.length
+          ?{recommendations:[],eliminated:e.details.eliminated,pipeline:e.details.pipeline}
+          :null);
+      }else{
+        setNote(`推荐失败（HTTP ${r.status}）${d?"":"，响应非 JSON"}`);
+        setResult(null);
+      }
+      setPhase("idle");
+    }catch(err){
+      clearTimeout(timer);
+      setNote(err.name==="AbortError"
+        ?"推荐超时（45 秒）。可点击重试；若持续超时，建议缩小约束范围或稍后再试"
+        :`无法连接后端：${err.message||"网络错误"}`);
+      setResult(null);setPhase("idle");
     }
   };
 
@@ -1742,7 +1860,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
         </div>
         {mfrs.length>0&&(<div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:10}}>
           {mfrs.map(m=>(<span key={m} style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:14,background:C.indigoBg,color:C.indigo,fontSize:12,border:`1px solid ${C.indigoBorder}`}}>
-            ⭐ {m}<span onClick={()=>setMfrs(mfrs.filter(x=>x!==m))} style={{cursor:"pointer",fontWeight:700}}>×</span></span>))}
+            ⭐ {m}<button aria-label={`移除优选厂商 ${m}`} onClick={()=>setMfrs(mfrs.filter(x=>x!==m))} style={{cursor:"pointer",fontWeight:700,border:"none",background:"none",color:"inherit",fontSize:13,lineHeight:1,padding:0}}>×</button></span>))}
         </div>)}
       </div>
 
@@ -1759,7 +1877,24 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
         <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>🎯 应用领域</div>
         <div style={{fontSize:11,color:C.textMute,marginBottom:10}}>不同应用下最优替代料不同，将调整参数权重与硬约束</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
-          {APPLICATIONS.map(a=>(<button key={a.code} onClick={()=>setApplication(a.code)} title={a.desc}
+          {APPLICATIONS.map(a=>(<button key={a.code} aria-pressed={application===a.code} onClick={()=>{
+              setApplication(a.code);
+              if(orderSource==="user_override"){
+                setReorderNote("已保留你手动调整的顺序；如需应用场景排序请点「恢复场景默认排序」");
+                return;
+              }
+              const next=reorderByApplication(params,a.code);
+              const changed=next.some((p,i)=>p.id!==params[i]?.id);
+              if(changed){
+                setParams(next);setOrderSource("scenario");
+                const moved=next[0]?.name;
+                const hard=(APP_HARD[a.code]||[]).filter(h=>next.some(p=>`${p.name}`.includes(h)));
+                setReorderNote(`已重排：「${moved}」提升至第 1 位` + (hard.length?`；建议将 ${hard.join("、")} 设为硬约束`:""));
+              }else{
+                setOrderSource(a.code==="generic"?"default":"scenario");
+                setReorderNote("该场景下参数顺序与当前一致，未做调整");
+              }
+            }} title={a.desc}
             style={{padding:"8px 6px",borderRadius:8,borderWidth:1.5,borderStyle:"solid",
               borderColor:application===a.code?C.green:C.border,
               background:application===a.code?C.greenLight:"#fff",cursor:"pointer",textAlign:"center"}}>
@@ -1767,8 +1902,14 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
             <div style={{fontSize:11,fontWeight:600,color:C.text,marginTop:2}}>{a.label}</div>
           </button>))}
         </div>
-        {application!=="generic"&&<div style={{marginTop:8,fontSize:11,color:C.indigo,background:C.indigoBg,border:`1px solid ${C.indigoBorder}`,borderRadius:6,padding:"6px 8px"}}>
-          💡 已按「{APPLICATIONS.find(a=>a.code===application)?.label}」重排参数优先级：{APPLICATIONS.find(a=>a.code===application)?.desc}
+        {reorderNote&&<div style={{marginTop:8,fontSize:11,color:C.indigo,background:C.indigoBg,border:`1px solid ${C.indigoBorder}`,borderRadius:6,padding:"6px 8px"}}>
+          💡 {reorderNote}
+          {orderSource==="user_override"&&<button onClick={()=>{
+              const next=reorderByApplication(params,application);
+              setParams(next);setOrderSource("scenario");
+              setReorderNote(`已恢复「${APPLICATIONS.find(a=>a.code===application)?.label}」默认排序`);
+            }} style={{marginLeft:8,padding:"2px 8px",borderRadius:4,border:`1px solid ${C.indigoBorder}`,background:"#fff",color:C.indigo,fontSize:10,cursor:"pointer"}}>
+            恢复场景默认排序</button>}
         </div>}
       </div>
 
@@ -1899,7 +2040,7 @@ function App(){
       {page==="workbench"&&original&&<Workbench key={original.partNumber} original={original} demoNote={demoNote} onBack={()=>setPage("home")} onSwitchVariant={v=>analyze(v.pn)}/>}
     </main>
     <footer style={{textAlign:"center",padding:"14px",borderTop:`1px solid ${C.borderLight}`,fontSize:12,color:C.textMute,background:"#fff"}}>
-      AltPart Pro v6.0.0 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
+      AltPart Pro v6.2.0 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
     </footer>
   </React.Fragment>);
 }

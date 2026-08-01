@@ -4,6 +4,7 @@
 const { queryLocalDB, queryLocalDBBatch, searchParts } = require("./ezplm");
 const { applyScenarioPriority, getApplicationHint } = require("./applications");
 const { applyProfile, PROFILES } = require("./rule-profiles");
+const { resolveIdentity, splitMpn } = require("./part-identity");
 const { getDistributorPart } = require("./distributor");
 const { analyzeComponent, getCandidates, lookupPartSpecs } = require("./gemini");
 const { fetchComponentFromAPIs } = require("./component");
@@ -11,6 +12,21 @@ const { cache } = require("./cache");
 
 // 淘汰阈值: 综合分低于此值的候选直接淘汰
 const ELIMINATION_THRESHOLD = 40;
+
+/**
+ * 虚构型号识别：AI 自述"不存在/虚构"，或参数几乎全为 N/A。
+ * 这是最后一道防线；主防线是"必须有权威来源证明存在"。
+ */
+function looksFictitious(partNumber, aiData) {
+  const text = `${aiData?.description || ""} ${aiData?.manufacturer || ""} ${aiData?.category || ""}`.toLowerCase();
+  if (/fictitious|does\s*not\s*exist|not\s*a\s*real|no\s*real\s*data|虚构|不存在|查无此/.test(text)) return true;
+  const ps = aiData?.parameters || [];
+  if (!ps.length) return true;
+  const naCount = ps.filter(p => p.value == null || /^n\/?a$/i.test(String(p.value).trim())).length;
+  if (naCount / ps.length >= 0.8) return true;                       // 八成以上无值
+  if (/^[A-Z_]*NOT_?A_?REAL|TEST_?PART|FAKE|DUMMY|XXXX/i.test(partNumber)) return true;
+  return false;
+}
 
 /** 功能类别归一化：中英文/别名 → 统一代码 */
 function normFunc(text) {
@@ -173,13 +189,21 @@ async function resolveOriginalPart(partNumber, onProgress) {
   onProgress?.("正在联网搜索 Datasheet...");
   console.log(`[Pipeline] ${partNumber}: not in local DB, falling back to AI search`);
   const aiData = await analyzeComponent(partNumber);
+  // ⚠ AI 不能证明型号存在。线上曾出现 NOT_A_REAL_PART_12345 被 AI 描述为
+  // "Fictitious Part" 后仍进入工作台并允许推荐。AI 结果一律标记 unverified，
+  // 由调用方（analyze 端点）决定是否放行。
   if (aiData?.parameters?.length) {
     // 标注数据来源为 AI
     aiData.parameters = aiData.parameters.map(p => ({
       ...p, source: "ai_search", sourceLabel: "AI搜索", confidence: "low",
     }));
-    cache.set(ck, aiData, 7 * 86400);
-    return { ...aiData, _dataPath: "ai_search" };
+    const fictitious = looksFictitious(partNumber, aiData);
+    const out = { ...aiData, _dataPath: "ai_search", unverified: true,
+      identity: { requestedMpn: partNumber, exactMpn: null,
+        baseDevice: splitMpn(partNumber).baseDevice, matchType: "unverified" },
+      fictitious };
+    if (!fictitious) cache.set(ck, out, 7 * 86400);   // 疑似虚构不写缓存，避免占用配额
+    return out;
   }
   throw new Error("无法获取器件参数（本地库未收录且联网搜索失败）");
 }
@@ -204,7 +228,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
 
   // ─── Step 2: AI 推荐 10 个候选 ───
   onProgress?.(`AI 正在搜索候选型号（目标 ${AI_CANDIDATE_COUNT} 个）...`);
-  let candidatePNs = [], aiEliminated = [];
+  let candidatePNs = [], aiEliminated = [], lastCandidateError = null;
   const candCategory = {};   // 型号 → AI 声明的功能类别
   const candCk = `cand10:${partNumber}:${mode}:${scenario || ""}:${application}`;
   const candCached = cache.get(candCk);
@@ -222,7 +246,10 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
           candCategory[String(c.pn).toUpperCase()] = String(c.functionCategory).toLowerCase(); });
         aiEliminated = aiResult.eliminated || [];
         if (candidatePNs.length) break;
-      } catch (e) { console.warn(`[Pipeline] Candidates attempt ${attempt + 1} failed:`, e.message); }
+      } catch (e) {
+        lastCandidateError = e;   // 保留上游原始异常，否则超时/限流会被误报成"无候选"
+        console.warn(`[Pipeline] Candidates attempt ${attempt + 1} failed:`, e.message);
+      }
       if (attempt < 1) await new Promise(r => setTimeout(r, 800));
     }
     if (candidatePNs.length) cache.set(candCk, { candidates: candidatePNs, eliminated: aiEliminated, categories: candCategory }, 86400);
@@ -243,7 +270,18 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   const seen = new Set();
   candidatePNs = candidatePNs.filter(pn => { const n = normPN(pn); if (seen.has(n)) return false; seen.add(n); return true; });
 
-  if (!candidatePNs.length) throw new Error("AI 未找到候选型号");
+  if (!candidatePNs.length) {
+    // 区分"上游故障"与"上游正常但确实没有候选"
+    if (lastCandidateError) {
+      const err = new Error(`候选查询失败：${lastCandidateError.message}`);
+      err.cause = lastCandidateError;
+      err.upstream = true;
+      throw err;
+    }
+    const err = new Error("AI 未返回任何候选型号");
+    err.noCandidates = true;
+    throw err;
+  }
   console.log(`[Pipeline] AI recommended ${candidatePNs.length} candidates:`, candidatePNs.join(", "));
 
   // ─── Step 3: 候选参数获取（本地库批量优先）───

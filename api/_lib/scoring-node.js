@@ -11,6 +11,42 @@
 const { toQuantityIR, comparable, conditionMatch } = require("./quantity");
 const { semanticsOf, PKG_COMPAT, pkgFamily } = require("./comparison-semantics");
 
+/**
+ * 约束合法性校验（后端必须再校验一次，不能只信前端）
+ * @returns {valid:boolean, error?:string}
+ */
+function validateConstraint(con, param) {
+  if (!con || !con.constraintType) return { valid: true };
+  if (!["hard", "soft", "none"].includes(con.constraintType))
+    return { valid: false, error: `未知约束类型：${con.constraintType}` };
+  const sem = semanticsOf(param?.name || "", param?.nameEn || "").semantics;
+  const isNumeric = !["compatible_set", "enum", "boolean", "text_match"].includes(sem);
+
+  if (!isNumeric && (con.min != null || con.max != null))
+    return { valid: false, error: `参数「${param?.name}」为${sem === "boolean" ? "布尔" : "离散"}类型，不支持最小/最大值约束，请使用可选值集合` };
+
+  if (con.min != null && con.max != null) {
+    const lo = toQuantityIR(String(con.min), param?.unit);
+    const hi = toQuantityIR(String(con.max), param?.unit);
+    // 约束端点必须是可比较的数值；纯文本（isText）不算
+    if (!lo.known || lo.isText || lo.canonicalTyp === undefined)
+      return { valid: false, error: `最小值「${con.min}」不是有效数值` };
+    if (!hi.known || hi.isText || hi.canonicalTyp === undefined)
+      return { valid: false, error: `最大值「${con.max}」不是有效数值` };
+    if (lo.canonicalTyp > hi.canonicalTyp)
+      return { valid: false, error: `最小值(${con.min})不得大于最大值(${con.max})` };
+  }
+  for (const [k, label] of [["min", "最小值"], ["max", "最大值"]]) {
+    if (con[k] == null) continue;
+    const q = toQuantityIR(String(con[k]), param?.unit);
+    if (!q.known || q.isText || q.canonicalTyp === undefined)
+      return { valid: false, error: `${label}「${con[k]}」不是有效数值` };
+  }
+  if (Array.isArray(con.options) && !con.options.length)
+    return { valid: false, error: "可选值集合不能为空" };
+  return { valid: true };
+}
+
 /* ── 数据来源可信度 ── */
 const SOURCE_CONFIDENCE = {
   ezplm: 1.0, manual: 1.0, manufacturer: 0.98, datasheet: 0.95,
@@ -323,7 +359,7 @@ function dimensionOf(paramScores, params) {
 }
 
 module.exports = {
-  calculateScore, compareParam, checkConstraint, decideLevel,
+  calculateScore, compareParam, checkConstraint, validateConstraint, decideLevel,
   SOURCE_CONFIDENCE, LEVELS, fmt,
   // 兼容旧调用
   scoreOneParam: (origParam, candValue) => compareParam(origParam, candValue, {}),
