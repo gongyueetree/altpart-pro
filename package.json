@@ -1,6 +1,6 @@
 {
   "name": "altpart-pro",
-  "version": "6.4.0",
+  "version": "6.4.1",
   "description": "AltPart Pro — 元器件替代决策智能体（ezPLM集成 · 确定性评分 · 证据可信度）",
   "private": true,
   "engines": {
@@ -10,7 +10,7 @@
     "dev": "vercel dev",
     "deploy": "vercel --prod",
     "vendor": "node scripts/vendor-occt.mjs",
-    "test": "node --test \"test/*.test.js\"",
+    "test": "node --test test/*.test.js",
     "check": "node scripts/check.mjs",
     "verify:live": "node scripts/verify-live.mjs"
   },

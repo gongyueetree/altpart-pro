@@ -224,3 +224,20 @@
 - 模板缺失参数的**主动补齐**：目前只提示"该品类常用但当前无数据"，未自动向分销商/PDF 追加查询
 - 品类模板尚未覆盖：连接器、无源器件、光电器件、电源模块
 - 用户自定义模板与企业级默认参数集
+
+## v6.4.1 — 修复 CI 失败
+
+现象：本地 `npm test` 与 `node scripts/check.mjs` 全通过，GitHub Actions 却 exit 1。
+
+根因：`package.json` 的测试命令写成
+```
+node --test "test/*.test.js"
+```
+**引号阻止了 shell 展开**，通配符被交给 Node 处理。而 Node 的 `--test` 通配符支持是
+v22 才加入的，CI 用的 Node 20 会把 `test/*.test.js` 当字面文件名，找不到 → exit 1。
+本地 Node 22 正常，因此没能提前发现。
+
+修复：
+- 去掉引号 → 由 shell 展开成文件列表，Node 18/20/22 均可用
+- CI 改为 **Node 20 + 22 矩阵**，防止再出现"本地过、CI 挂"的版本差异
+- `actions/checkout@v4 → @v5`，消除 Node 20 弃用警告

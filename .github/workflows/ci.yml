@@ -6,14 +6,21 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 同时验证 LTS 与当前版本，避免再出现"本地过、CI 挂"的版本差异
+        node: ['20', '22']
+    name: test (Node ${{ matrix.node }})
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
-      # 不依赖任何生产密钥：测试全部使用 mock / fixture
+        with:
+          node-version: ${{ matrix.node }}
+      # 测试全部使用 mock / fixture，不依赖任何生产密钥
       - name: Install
         run: npm install --no-audit --no-fund
-      - name: Syntax check (backend)
+      - name: Static check (backend syntax + frontend undefined refs)
         run: node scripts/check.mjs
       - name: Unit & contract tests
         run: npm test
