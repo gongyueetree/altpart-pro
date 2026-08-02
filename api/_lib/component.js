@@ -1,6 +1,7 @@
 // component.js — v2: Improved AI lookup with evidence tracking
 
 const { callGemini, repairJSON, lookupPartSpecs } = require("./gemini");
+const { sameParam } = require("./param-align");
 
 async function fetchComponentFromAPIs(partNumber, referenceParams = []) {
   if (process.env.DIGIKEY_CLIENT_ID) {
@@ -23,7 +24,8 @@ async function fetchFromAI(partNumber, referenceParams) {
       let val = data.params?.[key];
       if (!val && data.params) { const keys = Object.keys(data.params); if (keys[i]) val = data.params[keys[i]]; }
       if (!val && data.params) {
-        val = Object.entries(data.params).find(([k, v]) => k.includes(ref.name) || String(v?.name||"").includes(ref.name))?.[1];
+        val = Object.entries(data.params).find(([k, v]) =>
+          sameParam(k, ref.name) || sameParam(String(v?.name || ""), ref.name))?.[1];
       }
       const value = val?.value ?? val?.v ?? "N/A";
       if (value !== "N/A") found++;

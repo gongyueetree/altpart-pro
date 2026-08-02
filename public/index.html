@@ -1683,6 +1683,19 @@ function ResultCard({rec,index,market,onShowDetail}){
     </div>)}
     {expanded&&(rec.paramScores||[]).length>0&&(<div style={{padding:"0 14px 12px"}}>
       <div style={{padding:"6px 10px",fontSize:12,fontWeight:600,color:C.text}}>🔬 参数对比详情</div>
+      {(rec.extraParams||[]).length>0&&(
+        <details style={{margin:"4px 10px 8px",fontSize:11}}>
+          <summary style={{cursor:"pointer",color:C.textMute}}>
+            该候选另有 {rec.extraParams.length} 项参数未参与对比（原型号无对应项）
+          </summary>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:"2px 12px",marginTop:6}}>
+            {rec.extraParams.map((p,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:"space-between",gap:8,color:C.textSec}}>
+                <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
+                <span style={{fontFamily:"'DM Mono',monospace"}}>{p.value}</span>
+              </div>))}
+          </div>
+        </details>)}
       {rec.paramScores.map(ps=>(
         <div key={ps.paramId} style={{display:"grid",gridTemplateColumns:"110px 1fr 40px 120px auto",gap:8,alignItems:"center",padding:"6px 10px",borderRadius:6,background:ps.known===false?"#f5f5f5":scoreBg(ps.score),fontSize:12,marginBottom:3}}>
           <div style={{color:C.textSec,fontSize:11}}>{ps.paramName}</div>
@@ -2129,7 +2142,7 @@ function App(){
       {page==="workbench"&&original&&<Workbench key={original.partNumber} original={original} demoNote={demoNote} onBack={()=>setPage("home")} onSwitchVariant={v=>analyze(v.pn)}/>}
     </main>
     <footer style={{textAlign:"center",padding:"14px",borderTop:`1px solid ${C.borderLight}`,fontSize:12,color:C.textMute,background:"#fff"}}>
-      AltPart Pro v6.3.1 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
+      AltPart Pro v6.3.2 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
     </footer>
   </React.Fragment>);
 }

@@ -5,6 +5,7 @@ const { queryLocalDB, queryLocalDBBatch, searchParts } = require("./ezplm");
 const { applyScenarioPriority, getApplicationHint, scenarioHardParams } = require("./applications");
 const { applyProfile, PROFILES } = require("./rule-profiles");
 const { resolveIdentity, splitMpn } = require("./part-identity");
+const { alignParams } = require("./param-align");
 const { getDistributorPart } = require("./distributor");
 const { analyzeComponent, getCandidates, lookupPartSpecs } = require("./gemini");
 const { fetchComponentFromAPIs } = require("./component");
@@ -449,6 +450,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       isPreferred, overallScore: result.overallScore,
       authoritative: isAuthoritative(cand),
       market: cand.market || null,
+      extraParams: cand.extraParams || [],
       technical: result.technical, evidenceCoverage: result.evidenceCoverage,
       sourceConfidence: result.sourceConfidence, confidence: result.confidence,
       pinVerified: result.pinVerified,
@@ -567,19 +569,20 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
  * 本地库数据的参数 ID 对齐
  * 本地库的 param_N 顺序可能与原始器件不同，按参数名匹配对齐
  */
+/**
+ * 把 ezPLM 候选记录的参数对齐到原型号参数 id。
+ * 此前用朴素 includes 匹配，遇到「输入噪声密度[典型值](nV/√Hz)」这类带限定词与
+ * 单位后缀的 ezPLM 命名会全部失配，导致候选明明有数据却显示 N/A、覆盖率仅 33%。
+ */
 function alignLocalParams(localPart, referenceParams) {
-  const aligned = {};
-  for (const ref of referenceParams) {
-    // 按名称匹配
-    const match = localPart.parameters.find(p =>
-      p.name === ref.name || p.nameEn === ref.nameEn ||
-      p.name.includes(ref.name) || ref.name.includes(p.name)
-    );
-    aligned[ref.id] = match
-      ? { value: match.value, unit: match.unit || ref.unit, source: "ezplm", sourceLabel: "本地数据库", confidence: "high", verified: match.verified }
-      : { value: "N/A", unit: ref.unit || "", source: "", sourceLabel: "", confidence: "none" };
-  }
-  return { ...localPart, parameters: aligned };
+  const src = localPart.parameters || [];
+  const aligned = alignParams(src, referenceParams,
+    { source: "ezplm", sourceLabel: "本地数据库", confidence: "high" });
+  // 诊断：候选自身有、但原型号参数集里没有对应项的参数
+  const usedNames = new Set(Object.values(aligned).map(a => a.matchedName).filter(Boolean));
+  const extraParams = src.filter(p => !usedNames.has(p.name))
+    .map(p => ({ name: p.name, value: p.value })).slice(0, 12);
+  return { ...localPart, parameters: aligned, extraParams };
 }
 
 module.exports = { runPipeline, resolveOriginalPart };
