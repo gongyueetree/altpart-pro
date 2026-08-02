@@ -241,3 +241,42 @@ v22 才加入的，CI 用的 Node 20 会把 `test/*.test.js` 当字面文件名�
 - 去掉引号 → 由 shell 展开成文件列表，Node 18/20/22 均可用
 - CI 改为 **Node 20 + 22 矩阵**，防止再出现"本地过、CI 挂"的版本差异
 - `actions/checkout@v4 → @v5`，消除 Node 20 弃用警告
+
+## v6.4.2 — 分销商串料 + 待核验候选未渲染
+
+### ① TL431 参数变成液位传感器（P0）
+
+线上现象：查 TL431，参数列表出现
+```
+Type: Liquid
+Output Configuration: PNP
+Material - Housing & Prism: 316 Stainless Steel
+```
+这是**液位传感器**的参数，与 TL431 毫无关系。
+
+根因在 `distributor.js`：
+```js
+const p = list.find(精确匹配) || list.find(前缀匹配) || list[0];   // ← 元凶
+```
+`|| list[0]` 在两级匹配都失败时**无条件接受搜索结果第一条**。
+DigiKey 关键词搜 "TL431" 返回了液位传感器，就被当成 TL431 的数据写进参数表。
+
+修复：
+- 新增 `pickExact()`：归一化 MPN 完全相同 → 去包装后缀相同 → 同基础器件（且长度≥4）；
+  三级都不中就返回 null，**宁可没有也不用模糊结果**
+- DigiKey 与 Mouser 都命中时校验厂商一致，不一致则不合并
+
+### ② "推荐失败（HTTP 200）"
+
+后端把未经权威验证的候选分流到 `pendingVerification` 并返回 `success:true`，
+但前端只检查 `recommendations.length`，于是把"有结果但需核验"误判为失败。
+
+修复：前端同时检查两者，并新增待核验候选区（半透明、橙色说明条、逐条标注 pendingReason）。
+
+### ③ 参数缺单位
+
+线上出现 `输入偏置电流 150000`、`供电电压 32`、`工作温度 70` —— AI/分销商补的参数丢了单位。
+新增 `inferUnit()`：按参数名补默认单位并标 `unitInferred`；
+值里已有单位、无量纲参数（通道数）、文本值（封装）均不处理。
+
+测试：`distributor-exact.test.js` 22 例。全量 366 → 388。

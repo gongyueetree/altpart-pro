@@ -12,6 +12,32 @@
 
 const { sameParam } = require("./param-align");
 
+/** 参数名 → 默认单位（AI/分销商常丢单位，导致 "输入偏置电流 150000" 这种无法解读的值） */
+const DEFAULT_UNITS = [
+  [/增益带宽积|gbw/i, "MHz"], [/带宽|bandwidth/i, "MHz"],
+  [/压摆率|slew/i, "V/µs"], [/主频|frequency/i, "MHz"], [/开关频率|switching/i, "kHz"],
+  [/输入失调电压|offset\s*voltage|vos/i, "mV"], [/输入偏置电流|bias\s*current|ib/i, "nA"],
+  [/等效输入噪声|噪声密度|noise\s*density/i, "nV/√Hz"], [/噪声系数|noise\s*figure/i, "dB"],
+  [/静态电流|quiescent|iq/i, "µA"], [/供电电压|电源电压|supply\s*voltage/i, "V"],
+  [/输出电流|output\s*current/i, "mA"], [/工作温度|temperature/i, "°C"],
+  [/功耗|power/i, "mW"], [/导通电阻|rds/i, "mΩ"], [/栅电荷|qg/i, "nC"],
+  [/增益|gain/i, "dB"], [/cmrr|psrr|snr/i, "dB"], [/效率|efficiency/i, "%"],
+  [/压差|dropout/i, "mV"], [/采样率|sample\s*rate/i, "kSPS"],
+];
+
+/** 值本身不含单位时，按参数名补默认单位（并标记为推断） */
+function inferUnit(param) {
+  if (param.unit) return param;
+  const v = String(param.value ?? "").trim();
+  if (!v || /^n\/?a$/i.test(v)) return param;
+  if (/[a-zA-ZΩ°µμ%√]/.test(v.replace(/^[\d.,\s+\-~到至]+/, ""))) return param;  // 值里已有单位
+  if (!/^[-+]?[\d.]/.test(v)) return param;                                        // 非数值
+  for (const [re, u] of DEFAULT_UNITS)
+    if (re.test(`${param.name || ""} ${param.nameEn || ""}`))
+      return { ...param, unit: u, unitInferred: true };
+  return param;
+}
+
 /**
  * 每个品类的代表性参数，按重要度排序。
  * 名称写常见中文；实际匹配走 param-align 的同义词表，中英与限定词形态都能命中。
@@ -106,6 +132,7 @@ function organizeParams(params, categoryHint, topN = 10) {
     return s;
   };
   const kept = [];
+  params = params.map(inferUnit);
   for (const p of params) {
     const dupIdx = kept.findIndex(k => sameParam(k.name, p.name) || sameParam(k.nameEn, p.name) || sameParam(k.name, p.nameEn));
     if (dupIdx < 0) { kept.push({ ...p }); continue; }
@@ -144,4 +171,4 @@ function organizeParams(params, categoryHint, topN = 10) {
   };
 }
 
-module.exports = { CATEGORY_TEMPLATES, detectCategory, organizeParams, GENERIC_LAST };
+module.exports = { CATEGORY_TEMPLATES, detectCategory, organizeParams, inferUnit, DEFAULT_UNITS, GENERIC_LAST };

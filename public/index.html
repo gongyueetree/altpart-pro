@@ -1645,7 +1645,7 @@ function MarketStrip({rec,market}){
   </div>);
 }
 
-function ResultCard({rec,index,market,onShowDetail}){
+function ResultCard({rec,index,market,pending,onShowDetail}){
   const[expanded,setExpanded]=useState(index===0);
   return(<div style={{borderRadius:10,border:`1.5px solid ${C.border}`,background:"#fff",overflow:"hidden",marginBottom:14,animation:"fadeUp 0.4s ease both",animationDelay:`${index*0.06}s`}}>
     <div style={{padding:"14px 18px",display:"flex",alignItems:"center",gap:14,cursor:"pointer"}} onClick={()=>setExpanded(!expanded)}>
@@ -1662,6 +1662,7 @@ function ResultCard({rec,index,market,onShowDetail}){
           <span style={{padding:"2px 7px",borderRadius:4,background:C.bgSoft,color:C.textMute,fontSize:10,border:`1px solid ${C.borderLight}`}}>{rec.dataSource}</span>
         </div>
         <div style={{fontSize:13,color:C.textMute}}>{rec.manufacturer}</div>
+        {pending&&rec.pendingReason&&<div style={{fontSize:11,color:C.amber,marginTop:3}}>⚠ {rec.pendingReason}</div>}
         {rec.description&&<div style={{fontSize:12,color:C.textMute,marginTop:2}}>
           {rec.description}
           {rec.dataSource==="AI搜索"&&<span style={{marginLeft:6,fontSize:10,padding:"1px 5px",borderRadius:3,background:C.amberBg,color:C.amber,border:"1px solid #f0dca0"}}>描述来自AI，请核对</span>}
@@ -1813,8 +1814,11 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
       const ct=r.headers.get("content-type")||"";
       const d=ct.includes("json")?await r.json().catch(()=>null):null;
 
-      if(r.ok&&d&&d.success&&d.recommendations?.length){
+      // 后端会把未经权威来源验证的候选放进 pendingVerification，
+      // 只检查 recommendations 会把这种"有结果但需核验"误判成失败（线上显示"推荐失败(HTTP 200)"）
+      if(r.ok&&d&&d.success&&((d.recommendations?.length)||(d.pendingVerification?.length))){
         setResult(d);setPhase("done");
+        if(d.onlyPending)setNote(d.notice||"未找到有权威来源支撑的候选，以下为待核验候选");
         return;
       }
       if(original.partNumber==="STM32F103C8T6"&&original._dataPath==="demo"){
@@ -2066,7 +2070,21 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
           </div>
         </div>
         {view==="cards"
-          ?result.recommendations.map((rec,i)=><ResultCard key={rec.partNumber} rec={rec} index={i} market={market} onShowDetail={(pn,r)=>{setDetailPN(pn);setDetailRec(r)}}/>)
+          ?<React.Fragment>
+            {result.recommendations.map((rec,i)=><ResultCard key={rec.partNumber} rec={rec} index={i} market={market} onShowDetail={(pn,r)=>{setDetailPN(pn);setDetailRec(r)}}/>)}
+            {(result.pendingVerification||[]).length>0&&(
+              <div style={{marginTop:16}}>
+                <div style={{padding:"9px 14px",borderRadius:8,background:C.amberBg,border:"1px solid #f0dca0",color:"#854f0b",fontSize:12,marginBottom:10}}>
+                  🔍 待核验候选（{result.pendingVerification.length} 个）· 这些型号未获 ezPLM 或分销商精确确认，
+                  参数多来自 AI，<b>不进入正式推荐排名</b>，仅供探索方向，务必人工核对 datasheet
+                </div>
+                {result.pendingVerification.map((rec,i)=>(
+                  <div key={rec.partNumber} style={{opacity:.82}}>
+                    <ResultCard rec={rec} index={i} market={market} pending
+                      onShowDetail={(pn,r)=>{setDetailPN(pn);setDetailRec(r)}}/>
+                  </div>))}
+              </div>)}
+          </React.Fragment>
           :<CompareTable original={original} recs={result.recommendations}/>}
         {(result.eliminated||[]).length>0&&(<details style={{marginTop:12,borderRadius:10,border:`1px solid ${C.borderLight}`,background:"#fff"}}>
           <summary style={{padding:"11px 16px",cursor:"pointer",fontSize:13,color:C.textSec,fontWeight:500}}>🚫 被淘汰的候选（{result.eliminated.length}个）</summary>
@@ -2142,7 +2160,7 @@ function App(){
       {page==="workbench"&&original&&<Workbench key={original.partNumber} original={original} demoNote={demoNote} onBack={()=>setPage("home")} onSwitchVariant={v=>analyze(v.pn)}/>}
     </main>
     <footer style={{textAlign:"center",padding:"14px",borderTop:`1px solid ${C.borderLight}`,fontSize:12,color:C.textMute,background:"#fff"}}>
-      AltPart Pro v6.4.1 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
+      AltPart Pro v6.4.2 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
     </footer>
   </React.Fragment>);
 }
