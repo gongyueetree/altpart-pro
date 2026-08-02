@@ -1,6 +1,6 @@
 {
   "name": "altpart-pro",
-  "version": "6.4.2",
+  "version": "6.4.3",
   "description": "AltPart Pro — 元器件替代决策智能体（ezPLM集成 · 确定性评分 · 证据可信度）",
   "private": true,
   "engines": {

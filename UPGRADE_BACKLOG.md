@@ -280,3 +280,19 @@ DigiKey 关键词搜 "TL431" 返回了液位传感器，就被当成 TL431 的�
 值里已有单位、无量纲参数（通道数）、文本值（封装）均不处理。
 
 测试：`distributor-exact.test.js` 22 例。全量 366 → 388。
+
+## v6.4.3 — 前端缓存导致新后端配旧前端
+
+现象：`/api/health` 已返回 v6.4.2，接口实测 `success:true`、`finalCount:3`，
+页面却仍显示"推荐失败（HTTP 200）"。
+
+根因：`vercel.json` 只给 `/api/(.*)` 设了 `no-store`，**`index.html` 无任何缓存控制**。
+本项目前端是单文件 HTML，被浏览器/CDN 缓存后，部署新版仍跑旧代码 ——
+新后端返回 `pendingVerification`，旧前端不认识该字段，落入"推荐失败"兜底分支。
+
+修复：
+- `index.html` 与 `/` 设 `public, max-age=0, must-revalidate`（每次校验，内容未变仍走 304）
+- `/vendor/*`（OCCT wasm）设 `immutable` 长缓存
+- 顶部标题旁显示版本号，可直接肉眼确认部署是否生效
+- 兜底分支输出响应结构诊断（success/各数组长度/requestId），不再是无信息的死胡同
+- 兼容 `error` 为字符串的旧格式
