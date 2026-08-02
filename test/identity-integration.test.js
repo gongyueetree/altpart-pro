@@ -89,3 +89,70 @@ test("缓存键含身份，跨厂商不串", async t => {
   const st = identityCacheKey("ez:part", { exactMpn: "LM358ADR", manufacturerName: "STMicroelectronics", packageCode: "SOIC-8" });
   await t.test("TI 与 ST 键不同", () => assert.notEqual(ti, st));
 });
+
+test("P0：完整型号必须优先精确检索（不得因分页错过）", async t => {
+  const P2 = (mpn) => ({ id: `id-${mpn}`, mpn, manufacturer: { name: "Texas Instruments" },
+    category: { name: "电压基准" }, description: "可调精密并联稳压器",
+    footprint: { name: "SOT-23-5" }, pdf: { url: "https://qn.ezplm.com/x.pdf", fname: "TL431.pdf" },
+    attributes: [{ name: "工作温度", value: "0 to 70" }, { name: "输出电流", value: "100 mA" }] });
+
+  await t.test("完整型号查询命中即用（不回退基础型号）", async () => {
+    delete require.cache[require.resolve("../api/_lib/ezplm")];
+    delete require.cache[require.resolve("../api/ezplm")];
+    require("../api/_lib/cache").cache.clear();
+    process.env.EZPLM_API_KEY = "test-key";
+    const proxy = require("../api/ezplm");
+    const calls = [];
+    proxy.callEzplm = async (path, params) => {
+      calls.push(params.keyword);
+      // 完整型号查询直接命中
+      if (params.keyword === "TL431ACDBVRG4") return { ok: true, data: [P2("TL431ACDBVRG4")] };
+      return { ok: true, data: [] };
+    };
+    const ez = require("../api/_lib/ezplm");
+    const r = await ez.queryLocalDB("TL431ACDBVRG4");
+    assert.ok(r, "完整型号在 ezPLM 中存在时不得返回 null");
+    assert.equal(r.partNumber, "TL431ACDBVRG4");
+    assert.equal(r.identity.matchType, "exact");
+    assert.equal(calls[0], "TL431ACDBVRG4", "第一次查询必须用完整型号");
+  });
+
+  await t.test("完整型号查不到时回退基础型号找同族", async () => {
+    delete require.cache[require.resolve("../api/_lib/ezplm")];
+    delete require.cache[require.resolve("../api/ezplm")];
+    require("../api/_lib/cache").cache.clear();
+    process.env.EZPLM_API_KEY = "test-key";
+    const proxy = require("../api/ezplm");
+    const calls = [];
+    proxy.callEzplm = async (path, params) => {
+      calls.push(params.keyword);
+      if (params.keyword === "TL431") return { ok: true, data: [P2("TL431ACDBZR"), P2("TL431AIDBZR")] };
+      return { ok: true, data: [] };   // 完整型号查不到
+    };
+    const ez = require("../api/_lib/ezplm");
+    const r = await ez.queryLocalDB("TL431ACDBVRG4");
+    assert.ok(r, "应回退基础型号并返回同族变体");
+    assert.equal(r.needsVariantConfirm, true);
+    assert.equal(r.requestedMpn, "TL431ACDBVRG4");
+    assert.deepEqual(calls, ["TL431ACDBVRG4", "TL431"], "先完整型号，再基础型号");
+    assert.ok(r.variants.length >= 2);
+  });
+
+  await t.test("完整型号搜索返回同族但非精确 → 合并基础型号结果", async () => {
+    delete require.cache[require.resolve("../api/_lib/ezplm")];
+    delete require.cache[require.resolve("../api/ezplm")];
+    require("../api/_lib/cache").cache.clear();
+    process.env.EZPLM_API_KEY = "test-key";
+    const proxy = require("../api/ezplm");
+    proxy.callEzplm = async (path, params) => {
+      if (params.keyword === "TL431ACDBVRG4") return { ok: true, data: [P2("TL431ACDBVR")] };
+      if (params.keyword === "TL431") return { ok: true, data: [P2("TL431ACDBVR"), P2("TL431AIDBZR")] };
+      return { ok: true, data: [] };
+    };
+    const ez = require("../api/_lib/ezplm");
+    const r = await ez.queryLocalDB("TL431ACDBVRG4");
+    // TL431ACDBVR 与 TL431ACDBVRG4 仅差包装后缀 G4 → 视为 exact
+    assert.equal(r.identity.matchType, "exact");
+    assert.equal(r.partNumber, "TL431ACDBVR");
+  });
+});

@@ -2157,7 +2157,7 @@ function App(){
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="#fff" strokeWidth="1.8" fill="none"/><path d="M12 7v10M7 9.5l5 3 5-3" stroke="#fff" strokeWidth="1.5" strokeLinecap="round"/></svg>
         </div>
         <div style={{flex:1}}>
-          <div data-app-version="6.4.3" style={{fontSize:17,fontWeight:700,color:C.text}}>AltPart Pro <span style={{fontSize:10,fontWeight:400,color:C.textMute}}>v6.4.3</span></div>
+          <div data-app-version="6.4.4" style={{fontSize:17,fontWeight:700,color:C.text}}>AltPart Pro <span style={{fontSize:10,fontWeight:400,color:C.textMute}}>v6.4.3</span></div>
           <div style={{fontSize:11,color:C.textMute}}>元器件替代决策智能体 · ezPLM集成</div>
         </div>
         {page==="workbench"&&<button onClick={()=>setPage("home")} style={{padding:"8px 16px",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.textSec,fontSize:13,cursor:"pointer"}}>← 重新搜索</button>}
@@ -2178,7 +2178,7 @@ function App(){
       {page==="workbench"&&original&&<Workbench key={original.partNumber} original={original} demoNote={demoNote} onBack={()=>setPage("home")} onSwitchVariant={v=>analyze(v.pn)}/>}
     </main>
     <footer style={{textAlign:"center",padding:"14px",borderTop:`1px solid ${C.borderLight}`,fontSize:12,color:C.textMute,background:"#fff"}}>
-      AltPart Pro v6.4.3 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
+      AltPart Pro v6.4.4 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
     </footer>
   </React.Fragment>);
 }

@@ -158,12 +158,34 @@ async function queryLocalDB(partNumber, opts = {}) {
   }
 
   if (await ezplmConfigured()) {
-    // 用基础型号搜，覆盖面更广（输入 AD8331ARQ-REEL7 时也能找到同系列）
     const base = splitMpn(partNumber).baseDevice;
-    const r = await callEzplm("parts", { keyword: base || partNumber, pageSize: 30 });
+
+    // ── 两段式检索 ──
+    // 只用基础型号搜会漏：TL431 系列在 ezPLM 有数百个订货号，
+    // pageSize=30 的结果里可能不含 TL431ACDBVRG4，于是被误判为"未收录"。
+    // 因此先用**完整型号**精确查，命中即用；未命中再用基础型号找同族变体。
+    let mapped = [];
+    const exactSearch = await callEzplm("parts", { keyword: partNumber, pageSize: 20 });
+    if (exactSearch.ok && exactSearch.data.length) mapped = exactSearch.data.map(mapEzplmPart);
+
+    let identity = mapped.length ? resolveIdentity(partNumber, mapped, { sourceType: "ezplm" }) : null;
+
+    // 完整型号没查到精确匹配 → 退回基础型号，扩大范围找同族
+    if ((!identity || identity.matchType !== "exact") && base && base !== partNumber) {
+      const familySearch = await callEzplm("parts", { keyword: base, pageSize: 40 });
+      if (familySearch.ok && familySearch.data.length) {
+        const familyMapped = familySearch.data.map(mapEzplmPart);
+        // 合并去重，保留先前结果
+        const seen = new Set(mapped.map(m => String(m.partNumber).toUpperCase()));
+        for (const m of familyMapped)
+          if (!seen.has(String(m.partNumber).toUpperCase())) { mapped.push(m); seen.add(String(m.partNumber).toUpperCase()); }
+        identity = resolveIdentity(partNumber, mapped, { sourceType: "ezplm" });
+      }
+    }
+
+    const r = { ok: mapped.length > 0, data: mapped };
     if (r.ok && r.data.length) {
-      const mapped = r.data.map(mapEzplmPart);
-      const identity = resolveIdentity(partNumber, mapped, { sourceType: "ezplm" });
+      identity = identity || resolveIdentity(partNumber, mapped, { sourceType: "ezplm" });
 
       if (identity.matchType === "exact" && identity.record?.parameters?.length) {
         const out = { ...identity.record, identity, _matchType: "exact" };
