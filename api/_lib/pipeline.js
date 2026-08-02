@@ -6,6 +6,7 @@ const { applyScenarioPriority, getApplicationHint, scenarioHardParams } = requir
 const { applyProfile, PROFILES } = require("./rule-profiles");
 const { resolveIdentity, splitMpn } = require("./part-identity");
 const { alignParams } = require("./param-align");
+const { organizeParams } = require("./category-params");
 const { getDistributorPart } = require("./distributor");
 const { analyzeComponent, getCandidates, lookupPartSpecs } = require("./gemini");
 const { fetchComponentFromAPIs } = require("./component");
@@ -159,8 +160,13 @@ async function resolveOriginalPart(partNumber, onProgress) {
         .slice(0, 10);
     } catch (e) { console.warn("[Pipeline] 变体查询失败:", e.message); }
 
+    // 按品类挑选代表性参数并语义去重（合并 ezPLM + 分销商 + AI 后必有中英重复）
+    const org = organizeParams(parameters, `${localData.category || ""} ${localData.description || ""}`, 10);
     return {
-      ...localData, parameters,
+      ...localData, parameters: org.params,
+      paramCategory: org.category, paramTemplate: org.template,
+      missingTemplateParams: org.missingTemplateParams,
+      droppedParams: org.dropped.map(p => ({ name: p.name, value: p.value })),
       // ezPLM 直接给出的同族变体优先；否则用 searchParts 的结果
       variants: (localData.variants?.length ? localData.variants : variants),
       needsVariantConfirm: !!localData.needsVariantConfirm,
@@ -201,6 +207,11 @@ async function resolveOriginalPart(partNumber, onProgress) {
           if (out.parameters.length > dist.parameters.length) out._dataPath = dist._source + "+ai";
         } catch (e) {}
       }
+      const orgD = organizeParams(out.parameters, `${out.category || ""} ${out.description || ""}`, 10);
+      out.parameters = orgD.params;
+      out.paramCategory = orgD.category; out.paramTemplate = orgD.template;
+      out.missingTemplateParams = orgD.missingTemplateParams;
+      out.droppedParams = orgD.dropped.map(p => ({ name: p.name, value: p.value }));
       cache.set(ck, out, 7 * 86400);
       return out;
     }
