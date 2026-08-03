@@ -42,6 +42,32 @@ function looksFictitious(partNumber, aiData) {
   return false;
 }
 
+/**
+ * MPN 前缀 → 功能类别（受控映射，优先级高于描述关键词）
+ * ALT-004：STM32F303 内置比较器与运放，描述里出现 "comparator/op-amp"，
+ * 纯关键词匹配把整颗 MCU 判成了比较器，导致合法候选被误淘汰。
+ * 器件本体类别应由型号前缀这类确定性特征决定，外设名称不得改变主类别。
+ */
+const MPN_CATEGORY = [
+  [/^STM32|^GD32|^CH32|^HK32|^APM32|^AT32|^MM32|^N32|^ES32/i, "mcu"],
+  [/^(ATMEGA|ATTINY|ATSAM|PIC\d|DSPIC|MSP430|NRF5|ESP32|ESP8266|RP2\d|LPC\d|MK\d\d|EFM32|CY8C)/i, "mcu"],
+  [/^(LM|TL|OPA|AD8|ADA|MCP6|NE55|TLV|LMV|MAX4|LT1|LTC6)/i, null],   // 需进一步看描述
+  [/^(TPS|LM2[567]|MP\d{4}|SY8|XL\d{4}|AP\d{4}|RT\d{4})/i, null],
+];
+function categoryByMpn(mpn) {
+  const s = String(mpn || "").toUpperCase().trim();
+  if (!s) return null;
+  for (const [re, cat] of MPN_CATEGORY) if (re.test(s) && cat) return cat;
+  return null;
+}
+
+/** 主类别关键词（描述中出现即判定为该类器件本体） */
+const PRIMARY_MARKERS = [
+  ["mcu", /microcontroller|单片机|\bmcu\b|微控制器|cortex-?m|risc-?v\s*(mcu|核)/i],
+  ["adc", /\badc\b|模数转换器|analog.to.digital\s*converter/i],
+  ["dac", /\bdac\b|数模转换器|digital.to.analog\s*converter/i],
+];
+
 /** 功能类别归一化：中英文/别名 → 统一代码 */
 function normFunc(text) {
   const t = String(text || "").toLowerCase();
@@ -388,7 +414,14 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   // 教训：AI 曾把 AD8333(I/Q解调器) 当作 AD603(可变增益放大器) 的替代，
   // 且沿用了相邻型号的描述。功能类别不同的器件不可能是替代料，必须程序化拦截。
   // 描述通常比 ezPLM 的宽泛品类更精确（如 AD603 品类写"运算放大器"，描述才点明"可变增益放大器"）
-  const inferCat = o => normFunc(o?.description || "") || normFunc(o?._functionCategory || "") || normFunc(o?.category || "");
+  // 判定顺序：MPN 前缀（确定性）→ 主类别标记 → 描述 → 声明类别 → 品类字段
+  const inferCat = o => {
+    const byMpn = categoryByMpn(o?.partNumber || o?.mpn);
+    if (byMpn) return byMpn;
+    const text = `${o?.description || ""} ${o?.category || ""}`;
+    for (const [cat, re] of PRIMARY_MARKERS) if (re.test(text)) return cat;
+    return normFunc(o?.description || "") || normFunc(o?._functionCategory || "") || normFunc(o?.category || "");
+  };
   const origCat = inferCat(original);
   for (const cand of fetchResults) {
     const candCat = inferCat(cand) || normFunc(candCategory[String(cand.partNumber).toUpperCase()] || "");

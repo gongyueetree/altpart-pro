@@ -5,7 +5,7 @@
  * 不依赖任何密钥，可在 CI 中运行。
  */
 import { execSync } from "node:child_process";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
 
 let fail = 0;
@@ -25,7 +25,9 @@ try {
   const acorn = await import("acorn");
   const jsx = (await import("acorn-jsx")).default;
   const escope = await import("eslint-scope");
-  const html = readFileSync("public/index.html", "utf8");
+  // 构建后 index.html 是产物；源文件在 index.src.html
+  const srcPath = existsSync("public/index.src.html") ? "public/index.src.html" : "public/index.html";
+  const html = readFileSync(srcPath, "utf8");
   const code = html.match(/<script type="text\/babel">([\s\S]*?)<\/script>/)?.[1] || "";
   const ast = acorn.Parser.extend(jsx()).parse(code,
     { ecmaVersion: 2022, sourceType: "module", ranges: true, locations: true });

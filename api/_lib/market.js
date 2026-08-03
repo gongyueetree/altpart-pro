@@ -4,6 +4,7 @@
 
 const { callGemini, repairJSON } = require("./gemini");
 const { cache } = require("./cache");
+const { normalizeLeadTime } = require("./distributor");
 
 const TTL_REAL = 2 * 3600;    // 真实报价缓存2小时
 const TTL_EST = 12 * 3600;    // AI估算缓存12小时
@@ -56,8 +57,9 @@ async function digikeySearch(pn) {
       moq: p.MinimumOrderQuantity ?? 1,
       tiers: (p.StandardPricing || p.ProductVariations?.[0]?.StandardPricing || [])
         .slice(0, 4).map(t => ({ qty: t.BreakQuantity, price: t.UnitPrice })),
-      url: p.ProductUrl || p.DigiKeyProductNumber ? p.ProductUrl : undefined,
-      leadTimeDays: p.ManufacturerLeadWeeks ? parseInt(p.ManufacturerLeadWeeks) * 7 : null,
+      url: p.ProductUrl || undefined,
+      retrievedAt: new Date().toISOString(),
+      leadTime: normalizeLeadTime(p.ManufacturerLeadWeeks, "weeks"),
       lifecycle: p.ProductStatus?.Status || null,
     };
   } catch (e) { console.warn("[digikey] search失败:", e.message); return null; }
@@ -85,7 +87,8 @@ async function mouserSearch(pn) {
       moq: num(p.Min) ?? 1,
       tiers: (p.PriceBreaks || []).slice(0, 4).map(t => ({ qty: t.Quantity, price: num(t.Price) })),
       url: p.ProductDetailUrl,
-      leadTimeDays: num(p.LeadTime) ? num(p.LeadTime) * 7 : null,
+      retrievedAt: new Date().toISOString(),
+      leadTime: normalizeLeadTime(p.LeadTime, /week|周/i.test(String(p.LeadTime||"")) ? "weeks" : "days"),
       lifecycle: p.LifecycleStatus || null,
     };
   } catch (e) { console.warn("[mouser] search失败:", e.message); return null; }

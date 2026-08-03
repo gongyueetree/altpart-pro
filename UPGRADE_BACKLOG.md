@@ -363,3 +363,32 @@ ALT-014（MD/CSV 遗漏待核验候选）、ALT-015（导出文件缺 NOT_FOR_PR
 ALT-016（封装未关联 STEP）。
 
 测试：392 → 404 例，全部通过。
+
+## v6.6.0 — 完成测试报告全部 16 项
+
+| 编号 | 问题 | 修复 |
+|---|---|---|
+| ALT-001 S1 | 资料串料 | 顶层资源字段（datasheetUrl/productUrl…）接入 `guardResource`，未通过置 null，被拦项进 `blockedResources` 并在 UI 说明 |
+| ALT-002 S1 | 同 MPN 重复冲突 | `dedupeVariants()` 按 canonical 厂商 + 归一化 MPN 去重，冲突记录标 `⚠ 重复记录` |
+| ALT-003 S1 | 硬约束 N/A 仍进推荐 | 正式推荐条件改为 `authoritative && !needsVerification`（fail-closed） |
+| ALT-004 S2 | STM32F303 被判为 comparator | MPN 前缀受控映射优先于描述关键词（F303 内置比较器导致误判） |
+| ALT-005 S2 | `[object Object]` | analyze 端点逐字段读取 code/message/requestId/hint/aiSuggestion + 45s 超时 |
+| ALT-006 S2 | 交期 280/1960 天 | `normalizeLeadTime()` 统一转天，>365 天标异常且不参与排序，带 `retrievedAt` |
+| ALT-007 S3 | `64 KB KB` | `format.js` 统一 formatter，值含单位则不再拼接；仅数值开头才加单位 |
+| ALT-008 S3 | 变体卡不可键盘操作、弹窗无 dialog 语义 | 变体卡改 `button`；弹窗加 `role=dialog`/`aria-modal`/Escape/焦点陷阱/焦点归还 |
+| ALT-009 S3 | 模式与视图无语义状态 | 替代模式 `role=radiogroup`+`aria-checked`；结果视图 `role=tab`+`aria-selected` |
+| ALT-010 S3 | 页头页脚版本不一致 | 统一 `APP_VERSION` 常量，package.json 同步 |
+| ALT-011 S3 | 空厂商可点添加 | 输入 trim 后为空则 `disabled`+`aria-disabled` |
+| ALT-012 S3 | 浏览器端 Babel | `npm run build` 用 @babel/core 预编译为 `dist/app.<hash>.js`，生产 HTML 不再加载 babel-standalone；源文件保留 `index.src.html` |
+| ALT-013 S4 | 分销商页冒充官网 | `classifyProductUrl()` 域名判定，拆 `manufacturerUrl` / `distributorUrl` |
+| ALT-014 S2 | 导出遗漏待核验候选 | 导出改由统一模型驱动：正式推荐 + 待核验 + 淘汰摘要 + 查询条件 + 约束 + 参数优先级 + 版本 + 时间 + 免责声明；0 正式推荐时写明原因 |
+| ALT-015 S3 | 导出文件缺风险标记 | `.kicad_sym` / `.kicad_mod` 首部注释 + KiCad 属性写入 `status`/`generator`/`generated_at`/`source_uuid`，非权威来源标 `NOT_FOR_PRODUCTION` |
+| ALT-016 S3 | 封装未关联 STEP | `annotateFootprint()` 移除 `KICAD6_3DMODEL_DIR` 引用，改为 `${KIPRJMOD}/<name>.step` 相对路径 |
+
+测试：404 → **445 例，全部通过**。
+
+### 与报告验收标准的差距（诚实说明）
+- **ALT-012 部分完成**：已消除浏览器端 Babel，但 React/ReactDOM 仍走 CDN UMD，未做代码分割与 sourcemap 管理
+- **ALT-016 部分完成**：封装已引用同目录 STEP，但**未提供打包下载的资源包**；用户仍需手动把三个文件放同一目录
+- **未做真实浏览器验证**：ALT-008/009 的键盘与屏幕阅读器行为、四类 Blob 下载事件，均无 Playwright E2E（沙箱无浏览器）
+- **ALT-006 阈值 365 天为经验值**，未经真实分销商样本回放校准

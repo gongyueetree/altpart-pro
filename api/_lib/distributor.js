@@ -35,6 +35,38 @@ function pickExact(list, requestedMpn, mpnOf, mfrOf) {
   return familyHit || null;
 }
 
+/**
+ * 交期归一化（ALT-006）
+ * 线上出现 DigiKey 280 天、Mouser 1960 天 —— 后者显然是把"周"当成"天"再乘 7 的结果。
+ * 统一转为天，并对超出合理范围的值标记异常且不参与排序。
+ */
+const LEAD_TIME_MAX_DAYS = 365;      // 超过一年视为异常
+function normalizeLeadTime(raw, unit) {
+  if (raw == null || raw === "") return { days: null, abnormal: false, raw, unit };
+  const n = typeof raw === "number" ? raw : parseFloat(String(raw).match(/[\d.]+/)?.[0] ?? "");
+  if (!Number.isFinite(n) || n <= 0) return { days: null, abnormal: false, raw, unit };
+  const u = String(unit || "").toLowerCase();
+  const days = /week|周/.test(u) ? Math.round(n * 7)
+             : /month|月/.test(u) ? Math.round(n * 30)
+             : /hour|小时/.test(u) ? Math.round(n / 24)
+             : Math.round(n);
+  const abnormal = days > LEAD_TIME_MAX_DAYS;
+  return { days, abnormal, raw, unit: unit || "days",
+    note: abnormal ? `交期 ${days} 天超出合理范围（>${LEAD_TIME_MAX_DAYS} 天），已标记为待核验且不参与排序` : "" };
+}
+
+/** 制造商官网判定（ALT-013）：分销商域名不得冒充官网 */
+const DISTRIBUTOR_DOMAINS = /(digikey|mouser|arrow|avnet|farnell|element14|rs-online|rsdelivers|lcsc|szlcsc|newark|verical|oemstrade|findchips|octopart)\./i;
+function classifyProductUrl(url) {
+  if (!url) return { manufacturerUrl: null, distributorUrl: null };
+  try {
+    const host = new URL(url).hostname;
+    return DISTRIBUTOR_DOMAINS.test(host)
+      ? { manufacturerUrl: null, distributorUrl: url }
+      : { manufacturerUrl: url, distributorUrl: null };
+  } catch { return { manufacturerUrl: null, distributorUrl: null }; }
+}
+
 /* ── DigiKey OAuth ── */
 let dkToken = null, dkExp = 0;
 async function digikeyToken() {
@@ -100,7 +132,9 @@ async function digikeyPart(pn) {
       description: p.Description?.ProductDescription || p.Description?.DetailedDescription || "",
       parameters, footprint: pkg || "",
       datasheetUrl: p.DatasheetUrl || "",
-      productUrl: p.ProductUrl || "",
+      ...classifyProductUrl(p.ProductUrl || ""),
+      leadTime: normalizeLeadTime(p.ManufacturerLeadWeeks, "weeks"),
+      dataRetrievedAt: new Date().toISOString(),
       _source: "digikey",
     };
   } catch (e) { console.warn("[distributor] DigiKey search:", e.message); return null; }
@@ -140,7 +174,9 @@ async function mouserPart(pn) {
       parameters,
       footprint: (p.ProductAttributes || []).find(a => /package|case/i.test(a?.AttributeName || ""))?.AttributeValue || "",
       datasheetUrl: p.DataSheetUrl || "",
-      productUrl: p.ProductDetailUrl || "",
+      ...classifyProductUrl(p.ProductDetailUrl || ""),
+      leadTime: normalizeLeadTime(p.LeadTime, /week|周/i.test(String(p.LeadTime || "")) ? "weeks" : "days"),
+      dataRetrievedAt: new Date().toISOString(),
       _source: "mouser",
     };
   } catch (e) { console.warn("[distributor] Mouser search:", e.message); return null; }
@@ -177,4 +213,4 @@ async function getDistributorPart(partNumber) {
   return out;
 }
 
-module.exports = { getDistributorPart, digikeyPart, mouserPart };
+module.exports = { getDistributorPart, digikeyPart, mouserPart, normalizeLeadTime, classifyProductUrl, LEAD_TIME_MAX_DAYS };
