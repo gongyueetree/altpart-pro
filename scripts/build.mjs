@@ -60,5 +60,24 @@ let out = html
 if (/babel/i.test(out)) console.warn("[build] ⚠ 产物中仍存在 babel 引用，请检查");
 writeFileSync(OUT_HTML, out);
 
+// 产物自检：Babel 会把非 ASCII 转成 \uXXXX（大写十六进制），
+// 直接 grep 中文会误判为"内容缺失"。这里用同样的转义规则做真实校验。
+const escUp = t => [...t].map(c => c.charCodeAt(0) > 127
+  ? "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0").toUpperCase() : c).join("");
+const inBundle = t => code.includes(t) || code.includes(escUp(t))
+  || code.includes(escUp(t).toLowerCase());
+
+// 从源码里抽取若干 JSX 文本作为抽样锚点，确认产物完整
+const anchors = (m[1].match(/>[^<>{}\n]*[\u4e00-\u9fa5]{4,}[^<>{}\n]*</g) || [])
+  .map(x => (x.match(/[\u4e00-\u9fa5]{4,}/) || [])[0]).filter(Boolean);
+const sample = [...new Set(anchors)].slice(0, 12);
+const missing = sample.filter(t => !inBundle(t));
+if (missing.length) {
+  console.error(`[build] ✗ 产物缺失 ${missing.length}/${sample.length} 处界面文案，构建可能不完整:`);
+  missing.slice(0, 5).forEach(t => console.error(`         ${t}`));
+  process.exit(1);
+}
+console.log(`[build] ✓ 产物自检通过（抽样 ${sample.length} 处界面文案均存在）`);
+
 console.log(`[build] ✓ public/dist/${bundleName}  (${(code.length / 1024).toFixed(1)} KB)`);
 console.log(`[build] ✓ public/index.html 已改为加载预编译脚本，不再运行浏览器端 Babel`);

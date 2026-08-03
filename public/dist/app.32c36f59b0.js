@@ -3,7 +3,7 @@ const {
   useEffect,
   useRef
 } = React;
-const APP_VERSION = "6.8.1";
+const APP_VERSION = "6.8.2";
 const C = {
   green: "#1a6c4e",
   greenLight: "#e8f5ef",
@@ -5311,11 +5311,20 @@ function Workbench({
       if (e && typeof e === "object") {
         const n = e.details?.eliminatedCount;
         setNote(`${ERR_TEXT[e.code] || e.message || "推荐失败"}` + `${typeof n === "number" ? `（已排除 ${n} 个候选，见下方淘汰列表）` : ""}` + `${e.retryable ? " · 可重试" : ""} · ${e.code || ""} · ${e.requestId || ""}`);
-        setResult(e.details?.eliminated?.length ? {
-          recommendations: [],
-          eliminated: e.details.eliminated,
-          pipeline: e.details.pipeline
-        } : null);
+        // 有淘汰明细时必须进入 done 阶段，否则结果区（含淘汰列表）整块不渲染，
+        // 用户只看到"见下方淘汰列表"而下方空白
+        if (e.details?.eliminated?.length) {
+          setResult({
+            recommendations: [],
+            pendingVerification: [],
+            eliminated: e.details.eliminated,
+            pipeline: e.details.pipeline,
+            _noCandidates: true
+          });
+          setPhase("done");
+          return;
+        }
+        setResult(null);
       } else {
         // 走到这里说明响应既不是成功结构、也没有 error 对象。
         // 必须把实际收到的结构说清楚，否则用户只看到"推荐失败(HTTP 200)"无从排查。
