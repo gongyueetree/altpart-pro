@@ -7,7 +7,7 @@
 
 const { callEzplm } = require("../ezplm");
 const { cache } = require("./cache");
-const { resolveIdentity, identityCacheKey, guardResource, splitMpn, dedupeVariants } = require("./part-identity");
+const { resolveIdentity, identityCacheKey, guardResource, splitMpn, dedupeVariants, pickVariants } = require("./part-identity");
 
 /* ---------- 防御式取值（官方未给精确结构，兼容多形态） ---------- */
 const str = v => (typeof v === "string" && v.trim() ? v.trim() : undefined);
@@ -201,24 +201,26 @@ async function queryLocalDB(partNumber, opts = {}) {
       }
 
       // 无 exact：找出同基础器件的变体，交给上层做确认，绝不改写用户输入
-      const nrm = x => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-      const wantBase = nrm(base);
-      const sameFamily = mapped.filter(m => nrm(splitMpn(m.partNumber).baseDevice) === wantBase);
-      const pool = sameFamily.length ? sameFamily : mapped;
+      // 只列真正的变体：STM32F103C8T6 的变体是 C8T6TR / C8T6A，
+      // 而 C4T6A(16KB) / C6T6A(32KB) 是不同容量的器件，不该混入
+      const pick = pickVariants(partNumber, mapped, 12);
+      const pool = pick.variants.length ? pick.variants : mapped;
       if (pool.length) {
         const best = pool.find(m => m.parameters?.length) || pool[0];
         const out = {
           ...best,
           partNumber: best.partNumber,          // 保留真实变体号
           requestedMpn: partNumber,             // 同时保留用户输入，UI 需同时展示
-          identity: { ...identity, matchType: sameFamily.length ? "package_variant" : "base_device" },
-          _matchType: sameFamily.length ? "package_variant" : "base_device",
+          identity: { ...identity, matchType: pick.kinship === "same_family" ? "base_device" : "package_variant" },
+          _matchType: pick.kinship === "same_family" ? "base_device" : "package_variant",
           needsVariantConfirm: true,
           variants: pool.map(m => ({ pn: m.partNumber, package: m.footprint || "",
             note: m.description || "", ezplmId: m.ezplmId,
             manufacturer: m.manufacturer || "",
             duplicateConflict: !!m.duplicateConflict, duplicateCount: m.duplicateCount || 0,
           })).slice(0, 12),
+          variantKinship: pick.kinship,
+          familyOtherCount: pick.familyCount || 0,
           duplicateConflicts: dd.conflicts,
         };
         cache.set(probe, out, 86400);
@@ -298,7 +300,7 @@ async function queryPartDetail(partNumber) {
   const guardUrl = (url, fname, label) => {
     if (!url) return null;
     const g = guardResource(identity,
-      { url, fname, manufacturer: base.manufacturer, partNumber: base.partNumber });
+      { url, fname, type: label, manufacturer: base.manufacturer, partNumber: base.partNumber });
     if (g.ok) return url;
     blocked.push({ type: label, url, fname, code: g.code, reason: g.reason });
     console.warn(`[ezplm] ${label} 被身份守卫拒绝: ${g.reason}`);

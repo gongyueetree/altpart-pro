@@ -3,7 +3,7 @@ const {
   useEffect,
   useRef
 } = React;
-const APP_VERSION = "6.6.0";
+const APP_VERSION = "6.7.0";
 const C = {
   green: "#1a6c4e",
   greenLight: "#e8f5ef",
@@ -719,9 +719,17 @@ function hasUnitAlready(value, unit) {
   const esc = u.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(esc + "\\s*(\\([^)]*\\)|（[^）]*）)?$", "i").test(v) || new RegExp("\\d\\s*" + esc + "\\b", "i").test(v);
 }
+function normMulti(v) {
+  const raw = String(v ?? "");
+  if (!raw.includes("||")) return raw;
+  const parts = raw.split("||").map(x => x.trim()).filter(Boolean);
+  if (!parts.length) return raw;
+  const allNum = parts.every(x => /^[-+±]?[\d.]+\s*[a-zA-ZΩ°µμ%]*$/.test(x));
+  return parts.join(allNum ? " / " : "、");
+}
 function fmtVal(value, unit) {
   if (value === undefined || value === null) return "N/A";
-  const v = String(value).trim();
+  const v = normMulti(String(value).trim()).trim();
   if (!v || _NA_RE.test(v)) return "N/A";
   if (!unit) return v;
   if (hasUnitAlready(v, unit)) return v;

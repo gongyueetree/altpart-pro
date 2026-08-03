@@ -116,11 +116,21 @@ function guardResource(identity, resource, opts = {}) {
     return { ok: false, code: "RESOURCE_IDENTITY_MISMATCH",
       reason: `资源厂商 ${resource.manufacturer} 与当前器件厂商 ${identity.manufacturerName} 不一致` };
 
-  // 3) 文件名一致性（LM358ADR 详情里出现 LM2904BAIPWR.pdf 就是靠这条拦住）
+  // 3) 文件名一致性
+  //
+  // ⚠ 只对**按型号命名**的资源生效（datasheet / 符号）。
+  // 封装与 3D 模型按 KiCad 惯例是按**封装名**命名的（TQFP-48_7x7mm_P0.5mm.step），
+  // 文件名里本就不含型号；早期版本对它们也做型号匹配，把合法的 STEP 与 kicad_mod
+  // 全部误拦，导致 3D 预览退回示意图且无法旋转缩放。
+  const PACKAGE_NAMED = new Set(["footprint", "model3d", "step", "wrl", "symbol_pkg"]);
   const fname = resource.fname || resource.fileName || fileNameOf(resource.url);
-  if (fname && opts.checkFileName !== false) {
+  const kind = resource.type || opts.kind || "";
+  if (fname && opts.checkFileName !== false && !PACKAGE_NAMED.has(kind)) {
     const stem = norm(String(fname).replace(/\.[a-z0-9]+$/i, ""));
-    if (stem && idBase && stem.length >= 4 && !stem.includes(idBase) && !idBase.includes(stem.slice(0, 6))) {
+    // 文件名看起来就是封装名（形如 XXX-数字_数字x数字mm）时也跳过
+    const looksLikePackage = /^[A-Z]{2,6}\d{1,3}(EP)?\d*(X\d)?/.test(stem) && /\d+X\d+MM|P0\d|MM$/.test(stem);
+    if (!looksLikePackage && stem && idBase && stem.length >= 4 &&
+        !stem.includes(idBase) && !idBase.includes(stem.slice(0, 6))) {
       return { ok: false, code: "RESOURCE_IDENTITY_MISMATCH",
         reason: `资源文件名 ${fname} 与器件 ${identity.baseDevice} 不匹配` };
     }
@@ -211,7 +221,55 @@ function dedupeVariants(records = []) {
   return { records: out, conflicts };
 }
 
+/**
+ * 变体亲缘度分级（相对用户输入）
+ * STM32F103C8T6 的真正变体是 C8T6TR / C8T6A（只差包装或温度等级），
+ * 而 C4T6A(16KB) / C6T6A(32KB) 是**不同容量的器件**，不应混进同一变体列表。
+ *
+ * @returns 'same_orderable' 仅差包装后缀 | 'same_device' 输入是其前缀 | 'same_family' 同系列 | 'unrelated'
+ */
+function variantKinship(requestedMpn, candidateMpn) {
+  const n = x => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const req = n(requestedMpn), cand = n(candidateMpn);
+  if (!req || !cand) return "unrelated";
+  if (req === cand) return "same_orderable";
+
+  const reqBody = n(splitMpn(requestedMpn).body), candBody = n(splitMpn(candidateMpn).body);
+  if (reqBody && reqBody === candBody) return "same_orderable";       // 仅差 TR / REEL / G4 等包装后缀
+
+  // 候选以完整输入开头 → 输入是订货号前缀（C8T6 → C8T6TR / C8T6A）
+  if (cand.startsWith(req) || req.startsWith(cand)) return "same_device";
+
+  const reqBase = n(splitMpn(requestedMpn).baseDevice), candBase = n(splitMpn(candidateMpn).baseDevice);
+  if (reqBase && reqBase === candBase) return "same_family";          // 同系列但规格不同（C4/C6/C8）
+  return "unrelated";
+}
+
+const KINSHIP_RANK = { same_orderable: 0, same_device: 1, same_family: 2, unrelated: 3 };
+
+/**
+ * 挑选变体：优先只保留最近的一档，避免把整系列都列出来
+ * @returns { variants, kinship } kinship 为实际采用的档次
+ */
+function pickVariants(requestedMpn, records = [], limit = 12) {
+  const withKin = records.map(r => ({ r, k: variantKinship(requestedMpn, r.partNumber || r.mpn) }))
+    .filter(x => x.k !== "unrelated")
+    .sort((a, b) => KINSHIP_RANK[a.k] - KINSHIP_RANK[b.k]);
+  if (!withKin.length) return { variants: [], kinship: "unrelated" };
+
+  const best = withKin[0].k;
+  // same_orderable / same_device 视为同一档（都是该订货号的直接变体）
+  const acceptable = best === "same_family" ? ["same_family"] : ["same_orderable", "same_device"];
+  const picked = withKin.filter(x => acceptable.includes(x.k));
+  return {
+    variants: picked.slice(0, limit).map(x => ({ ...x.r, _kinship: x.k })),
+    kinship: best,
+    familyCount: withKin.filter(x => x.k === "same_family").length,
+  };
+}
+
 module.exports = {
   splitMpn, resolveIdentity, identityCacheKey, guardResource, dedupeVariants,
+  variantKinship, pickVariants,
   canonicalManufacturer, dedupeManufacturers, ORDERABLE_SUFFIX,
 };

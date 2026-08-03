@@ -7,6 +7,19 @@
 const NA_RE = /^(n\/?a|na|—|-|--|tbd|unknown|未知|无)$/i;
 
 /**
+ * ezPLM 用 "||" 作多值分隔符，直接展示会出现 "105||85"、"Dual Watchdog||RTC||SysTick"。
+ * 数值型多值（如温度等级 105/85）用 " / " 连接；文本型用 "、" 连接。
+ */
+function normalizeMultiValue(v) {
+  const raw = String(v ?? "");
+  if (!raw.includes("||")) return raw;
+  const parts = raw.split("||").map(x => x.trim()).filter(Boolean);
+  if (!parts.length) return raw;
+  const allNumeric = parts.every(x => /^[-+±]?[\d.]+\s*[a-zA-ZΩ°µμ%]*$/.test(x));
+  return parts.join(allNumeric ? " / " : "、");
+}
+
+/**
  * 判断值字符串末尾是否已带该单位
  * "64 KB" + unit "KB" → true；"2.0 - 3.6 V" + "V" → true
  */
@@ -27,7 +40,7 @@ function alreadyHasUnit(value, unit) {
  */
 function formatValue(value, unit, opts = {}) {
   if (value === undefined || value === null) return { text: "N/A", isNA: true, unitApplied: false };
-  const v = String(value).trim();
+  const v = normalizeMultiValue(String(value).trim()).trim();
   if (!v || NA_RE.test(v)) return { text: "N/A", isNA: true, unitApplied: false };
   if (!unit) return { text: v, isNA: false, unitApplied: false };
   if (alreadyHasUnit(v, unit)) return { text: v, isNA: false, unitApplied: false };
@@ -52,4 +65,4 @@ function splitValueUnit(value, unit) {
   return { value: String(value).trim(), unit: "" };
 }
 
-module.exports = { formatValue, splitValueUnit, alreadyHasUnit };
+module.exports = { formatValue, splitValueUnit, alreadyHasUnit, normalizeMultiValue };

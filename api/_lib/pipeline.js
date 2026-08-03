@@ -4,7 +4,7 @@
 const { queryLocalDB, queryLocalDBBatch, searchParts } = require("./ezplm");
 const { applyScenarioPriority, getApplicationHint, scenarioHardParams } = require("./applications");
 const { applyProfile, PROFILES } = require("./rule-profiles");
-const { resolveIdentity, splitMpn } = require("./part-identity");
+const { resolveIdentity, splitMpn, pickVariants } = require("./part-identity");
 const { alignParams } = require("./param-align");
 const { organizeParams } = require("./category-params");
 const { getDistributorPart } = require("./distributor");
@@ -177,13 +177,14 @@ async function resolveOriginalPart(partNumber, onProgress) {
     try {
       const base = baseMpn(localData.partNumber);
       const sibs = await searchParts(base, 30);
+      const pick = pickVariants(partNumber, sibs, 10);
       const norm = x => String(x).toUpperCase().replace(/[^A-Z0-9]/g, "");
       const self = norm(localData.partNumber);
       const seen = new Set([self]);
-      variants = sibs
+      variants = pick.variants
         .filter(p => { const n = norm(p.partNumber); if (seen.has(n)) return false; seen.add(n); return true; })
-        .map(p => ({ pn: p.partNumber, package: p.footprint || "", note: p.description || "", ezplmId: p.ezplmId }))
-        .slice(0, 10);
+        .map(p => ({ pn: p.partNumber, package: p.footprint || "", note: p.description || "",
+          ezplmId: p.ezplmId, manufacturer: p.manufacturer || "" }));
     } catch (e) { console.warn("[Pipeline] 变体查询失败:", e.message); }
 
     // 按品类挑选代表性参数并语义去重（合并 ezPLM + 分销商 + AI 后必有中英重复）
