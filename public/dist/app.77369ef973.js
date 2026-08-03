@@ -3,7 +3,7 @@ const {
   useEffect,
   useRef
 } = React;
-const APP_VERSION = "6.8.0";
+const APP_VERSION = "6.8.1";
 const C = {
   green: "#1a6c4e",
   greenLight: "#e8f5ef",
@@ -5294,11 +5294,18 @@ function Workbench({
       if (typeof e === "string" && e) {
         // 旧格式：error 为字符串
         setNote(`推荐失败：${e}`);
-        setResult(Array.isArray(d.eliminated) && d.eliminated.length ? {
-          recommendations: [],
-          eliminated: d.eliminated
-        } : null);
-        setPhase("idle");
+        if (Array.isArray(d.eliminated) && d.eliminated.length) {
+          setResult({
+            recommendations: [],
+            pendingVerification: [],
+            eliminated: d.eliminated,
+            _noCandidates: true
+          });
+          setPhase("done");
+        } else {
+          setResult(null);
+          setPhase("idle");
+        }
         return;
       }
       if (e && typeof e === "object") {
@@ -5315,12 +5322,16 @@ function Workbench({
         const shape = d ? [`success=${JSON.stringify(d.success)}`, `recommendations=${Array.isArray(d.recommendations) ? d.recommendations.length : "无此字段"}`, `pendingVerification=${Array.isArray(d.pendingVerification) ? d.pendingVerification.length : "无此字段"}`, `eliminated=${Array.isArray(d.eliminated) ? d.eliminated.length : "无此字段"}`, d.requestId ? `requestId=${d.requestId}` : ""].filter(Boolean).join(" · ") : "响应非 JSON";
         setNote(`后端返回了无法识别的响应（HTTP ${r.status}）：${shape}`);
         // 有淘汰列表就展示，至少能看到为什么没候选
-        setResult(Array.isArray(d?.eliminated) && d.eliminated.length ? {
-          recommendations: [],
-          pendingVerification: [],
-          eliminated: d.eliminated,
-          pipeline: d.pipeline
-        } : null);
+        if (Array.isArray(d?.eliminated) && d.eliminated.length) {
+          setResult({
+            recommendations: [],
+            pendingVerification: [],
+            eliminated: d.eliminated,
+            pipeline: d.pipeline,
+            _noCandidates: true
+          });
+          setPhase("done");
+        } else setResult(null);
         console.warn("[recommend] 未识别的响应结构:", d);
       }
       setPhase("idle");
@@ -6228,7 +6239,72 @@ function Workbench({
     style: {
       animation: "fadeUp 0.4s ease both"
     }
-  }, result.recommendations.some(r => r._lowConfidence) && /*#__PURE__*/React.createElement("div", {
+  }, result._noCandidates && (result.eliminated || []).length > 0 && (() => {
+    // 按原因归类，一眼看出"为什么全被排除"
+    const groups = {};
+    for (const e of result.eliminated) {
+      const r = String(e.reason || "未说明");
+      const st = e.stage || "";
+      const key = st === "lookup_failed" || /未收录|查询失败|未校验/.test(r) ? "未查到该型号的数据（非技术原因）" : st === "category" || /功能类别不符/.test(r) ? "功能类别不符" : st === "hard_constraint" || /硬约束|无法验证/.test(r) ? "硬约束不满足或无法验证" : st === "mode_gate" ? /封装/.test(r) ? "封装不满足当前模式要求" : /非国产/.test(r) ? "厂商非国产" : /价格|报价|现货/.test(r) ? "缺少真实报价或无现货" : /证据覆盖率/.test(r) ? "证据覆盖率不足" : "不满足当前替代模式门槛" : st === "ai_filter" ? "AI 初筛排除" : /可信度|评分|阈值/.test(r) ? "综合可信度低于阈值" : "其它";
+      (groups[key] || (groups[key] = [])).push(e);
+    }
+    const entries = Object.entries(groups).sort((a, b) => b[1].length - a[1].length);
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "12px 16px",
+        borderRadius: 8,
+        background: C.bgSoft,
+        border: `1px solid ${C.border}`,
+        marginBottom: 14
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: C.text,
+        marginBottom: 8
+      }
+    }, "\u4E3A\u4EC0\u4E48\u6CA1\u6709\u63A8\u8350\u7ED3\u679C\uFF1F", result.eliminated.length, " \u4E2A\u5019\u9009\u7684\u6392\u9664\u539F\u56E0\u5206\u5E03\uFF1A"), entries.map(([k, v]) => /*#__PURE__*/React.createElement("div", {
+      key: k,
+      style: {
+        display: "flex",
+        alignItems: "baseline",
+        gap: 10,
+        padding: "4px 0",
+        fontSize: 12
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        minWidth: 26,
+        fontWeight: 700,
+        color: C.amber,
+        fontFamily: "'DM Mono',monospace"
+      }
+    }, v.length), /*#__PURE__*/React.createElement("span", {
+      style: {
+        flex: 1,
+        color: C.textSec
+      }
+    }, k), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: C.textMute,
+        fontFamily: "'DM Mono',monospace",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        maxWidth: 280
+      }
+    }, v.slice(0, 3).map(x => x.partNumber).join("、"), v.length > 3 ? ` 等 ${v.length} 个` : ""))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 9,
+        paddingTop: 9,
+        borderTop: `1px dashed ${C.borderLight}`,
+        fontSize: 11,
+        color: C.textMute
+      }
+    }, "\uD83D\uDCA1 ", entries[0] && /未查到/.test(entries[0][0]) ? "多数候选未查到数据：这些型号可能不在 ezPLM 白名单内，也未被 DigiKey/Mouser 精确匹配。可先确认该品类在库覆盖情况。" : "可尝试：放宽硬约束 / 切换到「功能兼容」模式 / 取消优选厂商限制 / 降低应用场景要求"));
+  })(), (result.recommendations || []).some(r => r._lowConfidence) && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "8px 14px",
       borderRadius: 7,
@@ -6262,7 +6338,7 @@ function Workbench({
       fontSize: 16,
       fontWeight: 700
     }
-  }, "\u63A8\u8350\u7ED3\u679C ", /*#__PURE__*/React.createElement("span", {
+  }, result._noCandidates ? "排除详情" : "推荐结果", " ", /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 13,
       color: C.textMute,
@@ -6323,7 +6399,7 @@ function Workbench({
       fontSize: 12,
       cursor: "pointer"
     }
-  }, "\uD83D\uDCCA CSV"))), view === "cards" ? /*#__PURE__*/React.createElement(React.Fragment, null, result.recommendations.map((rec, i) => /*#__PURE__*/React.createElement(ResultCard, {
+  }, "\uD83D\uDCCA CSV"))), view === "cards" ? /*#__PURE__*/React.createElement(React.Fragment, null, (result.recommendations || []).map((rec, i) => /*#__PURE__*/React.createElement(ResultCard, {
     key: rec.partNumber,
     rec: rec,
     index: i,
@@ -6362,8 +6438,9 @@ function Workbench({
     }
   }))))) : /*#__PURE__*/React.createElement(CompareTable, {
     original: original,
-    recs: result.recommendations
+    recs: result.recommendations || []
   }), (result.eliminated || []).length > 0 && /*#__PURE__*/React.createElement("details", {
+    open: !!result._noCandidates,
     style: {
       marginTop: 12,
       borderRadius: 10,

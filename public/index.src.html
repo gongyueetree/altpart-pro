@@ -28,7 +28,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <script type="text/babel">
 const{useState,useEffect,useRef}=React;
 
-const APP_VERSION="6.8.0";
+const APP_VERSION="6.8.1";
 
 const C={
   green:"#1a6c4e",greenLight:"#e8f5ef",greenMid:"#c2e5d3",greenAccent:"#2d9d6f",
@@ -1954,8 +1954,11 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
       const e=d&&d.error;
       if(typeof e==="string"&&e){          // 旧格式：error 为字符串
         setNote(`推荐失败：${e}`);
-        setResult(Array.isArray(d.eliminated)&&d.eliminated.length?{recommendations:[],eliminated:d.eliminated}:null);
-        setPhase("idle");return;
+        if(Array.isArray(d.eliminated)&&d.eliminated.length){
+          setResult({recommendations:[],pendingVerification:[],eliminated:d.eliminated,_noCandidates:true});
+          setPhase("done");
+        }else{ setResult(null); setPhase("idle"); }
+        return;
       }
       if(e&&typeof e==="object"){
         const n=e.details?.eliminatedCount;
@@ -1977,9 +1980,10 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
         ].filter(Boolean).join(" · "):"响应非 JSON";
         setNote(`后端返回了无法识别的响应（HTTP ${r.status}）：${shape}`);
         // 有淘汰列表就展示，至少能看到为什么没候选
-        setResult(Array.isArray(d?.eliminated)&&d.eliminated.length
-          ?{recommendations:[],pendingVerification:[],eliminated:d.eliminated,pipeline:d.pipeline}
-          :null);
+        if(Array.isArray(d?.eliminated)&&d.eliminated.length){
+          setResult({recommendations:[],pendingVerification:[],eliminated:d.eliminated,pipeline:d.pipeline,_noCandidates:true});
+          setPhase("done");
+        }else setResult(null);
         console.warn("[recommend] 未识别的响应结构:",d);
       }
       setPhase("idle");
@@ -2304,10 +2308,49 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
         正在推荐（AI候选 → 本地库校验 → 评分淘汰），约需 10–30 秒…
       </div>)}
       {phase==="done"&&result&&(<div style={{animation:"fadeUp 0.4s ease both"}}>
-        {result.recommendations.some(r=>r._lowConfidence)&&(<div style={{padding:"8px 14px",borderRadius:7,background:C.amberBg,border:"1px solid #f0dca0",color:"#854f0b",fontSize:12,marginBottom:12}}>⚠ 以下候选的证据可信度低于常规阈值（多为AI来源且资料不全），仅供参考方向，务必人工核对 datasheet 后再决策</div>)}
+        {result._noCandidates&&(result.eliminated||[]).length>0&&(()=>{
+          // 按原因归类，一眼看出"为什么全被排除"
+          const groups={};
+          for(const e of result.eliminated){
+            const r=String(e.reason||"未说明");
+            const st=e.stage||"";
+            const key=st==="lookup_failed"||/未收录|查询失败|未校验/.test(r)?"未查到该型号的数据（非技术原因）"
+              :st==="category"||/功能类别不符/.test(r)?"功能类别不符"
+              :st==="hard_constraint"||/硬约束|无法验证/.test(r)?"硬约束不满足或无法验证"
+              :st==="mode_gate"?(/封装/.test(r)?"封装不满足当前模式要求"
+                  :/非国产/.test(r)?"厂商非国产"
+                  :/价格|报价|现货/.test(r)?"缺少真实报价或无现货"
+                  :/证据覆盖率/.test(r)?"证据覆盖率不足"
+                  :"不满足当前替代模式门槛")
+              :st==="ai_filter"?"AI 初筛排除"
+              :/可信度|评分|阈值/.test(r)?"综合可信度低于阈值"
+              :"其它";
+            (groups[key]||(groups[key]=[])).push(e);
+          }
+          const entries=Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);
+          return(<div style={{padding:"12px 16px",borderRadius:8,background:C.bgSoft,border:`1px solid ${C.border}`,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:8}}>
+              为什么没有推荐结果？{result.eliminated.length} 个候选的排除原因分布：
+            </div>
+            {entries.map(([k,v])=>(
+              <div key={k} style={{display:"flex",alignItems:"baseline",gap:10,padding:"4px 0",fontSize:12}}>
+                <span style={{minWidth:26,fontWeight:700,color:C.amber,fontFamily:"'DM Mono',monospace"}}>{v.length}</span>
+                <span style={{flex:1,color:C.textSec}}>{k}</span>
+                <span style={{fontSize:11,color:C.textMute,fontFamily:"'DM Mono',monospace",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:280}}>
+                  {v.slice(0,3).map(x=>x.partNumber).join("、")}{v.length>3?` 等 ${v.length} 个`:""}
+                </span>
+              </div>))}
+            <div style={{marginTop:9,paddingTop:9,borderTop:`1px dashed ${C.borderLight}`,fontSize:11,color:C.textMute}}>
+              💡 {entries[0]&&/未查到/.test(entries[0][0])
+                ?"多数候选未查到数据：这些型号可能不在 ezPLM 白名单内，也未被 DigiKey/Mouser 精确匹配。可先确认该品类在库覆盖情况。"
+                :"可尝试：放宽硬约束 / 切换到「功能兼容」模式 / 取消优选厂商限制 / 降低应用场景要求"}
+            </div>
+          </div>);
+        })()}
+        {(result.recommendations||[]).some(r=>r._lowConfidence)&&(<div style={{padding:"8px 14px",borderRadius:7,background:C.amberBg,border:"1px solid #f0dca0",color:"#854f0b",fontSize:12,marginBottom:12}}>⚠ 以下候选的证据可信度低于常规阈值（多为AI来源且资料不全），仅供参考方向，务必人工核对 datasheet 后再决策</div>)}
         {(result.eliminated||[]).some(e=>/功能类别不符/.test(e.reason||""))&&(<div style={{padding:"8px 14px",borderRadius:7,background:C.greenLight,border:`1px solid ${C.greenMid}`,color:C.green,fontSize:12,marginBottom:12}}>✓ 已自动拦截 {(result.eliminated||[]).filter(e=>/功能类别不符/.test(e.reason||"")).length} 个功能类别不符的候选（见下方淘汰列表）</div>)}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
-          <h3 style={{fontSize:16,fontWeight:700}}>推荐结果 <span style={{fontSize:13,color:C.textMute,fontWeight:400}}>· {result.recommendations.length} 个替代方案{result.basePrice!=null?` · 原型号 $${result.basePrice}`:""} · 点击型号查看采购详情</span></h3>
+          <h3 style={{fontSize:16,fontWeight:700}}>{result._noCandidates?"排除详情":"推荐结果"} <span style={{fontSize:13,color:C.textMute,fontWeight:400}}>· {result.recommendations.length} 个替代方案{result.basePrice!=null?` · 原型号 $${result.basePrice}`:""} · 点击型号查看采购详情</span></h3>
           <div style={{display:"flex",gap:6}}>
             <div style={{display:"flex",borderRadius:7,border:`1px solid ${C.border}`,overflow:"hidden"}}>
               <button onClick={()=>setView("cards")} style={{padding:"5px 14px",border:"none",background:view==="cards"?C.green:"#fff",color:view==="cards"?"#fff":C.textSec,fontSize:12,cursor:"pointer"}}>卡片</button>
@@ -2319,7 +2362,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
         </div>
         {view==="cards"
           ?<React.Fragment>
-            {result.recommendations.map((rec,i)=><ResultCard key={rec.partNumber} rec={rec} index={i} market={market} onShowDetail={(pn,r)=>{setDetailPN(pn);setDetailRec(r)}}/>)}
+            {(result.recommendations||[]).map((rec,i)=><ResultCard key={rec.partNumber} rec={rec} index={i} market={market} onShowDetail={(pn,r)=>{setDetailPN(pn);setDetailRec(r)}}/>)}
             {(result.pendingVerification||[]).length>0&&(
               <div style={{marginTop:16}}>
                 <div style={{padding:"9px 14px",borderRadius:8,background:C.amberBg,border:"1px solid #f0dca0",color:"#854f0b",fontSize:12,marginBottom:10}}>
@@ -2334,8 +2377,8 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
                   </div>))}
               </div>)}
           </React.Fragment>
-          :<CompareTable original={original} recs={result.recommendations}/>}
-        {(result.eliminated||[]).length>0&&(<details style={{marginTop:12,borderRadius:10,border:`1px solid ${C.borderLight}`,background:"#fff"}}>
+          :<CompareTable original={original} recs={result.recommendations||[]}/>}
+        {(result.eliminated||[]).length>0&&(<details open={!!result._noCandidates} style={{marginTop:12,borderRadius:10,border:`1px solid ${C.borderLight}`,background:"#fff"}}>
           <summary style={{padding:"11px 16px",cursor:"pointer",fontSize:13,color:C.textSec,fontWeight:500}}>🚫 被淘汰的候选（{result.eliminated.length}个）</summary>
           <div style={{padding:"0 16px 12px"}}>
             {result.eliminated.map((e,i)=>(<div key={i} style={{display:"flex",gap:12,padding:"6px 0",borderBottom:`1px solid ${C.borderLight}`,fontSize:12}}>

@@ -450,8 +450,9 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   const scored = [];
   const lowScored = [];   // 低于淘汰线的候选（若最终无合格者，从中救回Top3）
   const eliminated = [
-    ...aiEliminated.map(e => ({ partNumber: e.pn || e.partNumber || "", manufacturer: "", reason: e.reason || "AI排除" })),
-    ...unverified, // 查询失败的候选也计入淘汰列表
+    ...aiEliminated.map(e => ({ partNumber: e.pn || e.partNumber || "", manufacturer: "", reason: e.reason || "AI 排除", stage: "ai_filter" })),
+    // 查询失败的候选不是"技术上不合适"，而是"没查到数据"，需分开说明
+    ...unverified.map(u => ({ ...u, stage: "lookup_failed" })),
   ];
 
   for (const cand of fetchResults) {
@@ -460,12 +461,15 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     // 功能类别不符 → 直接淘汰（替代料的前提是同类器件）
     if (cand._categoryMismatch) {
       eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer,
-        reason: `功能类别不符：原型号为「${cand._categoryMismatch.orig}」，该型号为「${cand._categoryMismatch.cand}」，不可作为替代` });
+        reason: `功能类别不符：原型号为「${cand._categoryMismatch.orig}」，该型号为「${cand._categoryMismatch.cand}」，不可作为替代`, stage: "category" });
       continue;
     }
     // 硬约束淘汰
-    if (result.eliminated) {
-      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: result.elimReason });
+    // 字段名曾写成 result.eliminated/elimReason（scoring 实际返回 rejected/rejectReason），
+    // 导致这个分支永远不触发，硬约束违规的候选混进了低分池而非被明确淘汰。
+    if (result.rejected) {
+      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer,
+        reason: result.rejectReason || "不满足硬约束", stage: "hard_constraint" });
       continue;
     }
     // 分数过低：先收集，最后统一决定是否淘汰（避免纯AI模式下全军覆没）
@@ -477,7 +481,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     // ── 替代模式确定性门槛（此前仅靠提示词，无程序化约束）──
     const gate = applyProfile(mode, { original, candidate: cand, scoreResult: result, procurement });
     if (!gate.pass) {
-      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: gate.reason });
+      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: gate.reason, stage: "mode_gate" });
       continue;
     }
     if (gate.downgrade === "NEEDS_VERIFICATION") {
@@ -510,13 +514,14 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   }
 
   // 淘汰保底：合格者为空时，从低分候选中救回Top3（其P0/N/X等级已表达低可信度）
+  // 全部候选都没进 scored 时，尽量给出可解释的结果而非空白
   if (!scored.length && lowScored.length) {
     lowScored.sort((a, b) => b.result.overallScore - a.result.overallScore);
     for (const { cand, result } of lowScored.slice(0, 3)) {
       // ── 替代模式确定性门槛（此前仅靠提示词，无程序化约束）──
     const gate = applyProfile(mode, { original, candidate: cand, scoreResult: result, procurement });
     if (!gate.pass) {
-      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: gate.reason });
+      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: gate.reason, stage: "mode_gate" });
       continue;
     }
     if (gate.downgrade === "NEEDS_VERIFICATION") {
