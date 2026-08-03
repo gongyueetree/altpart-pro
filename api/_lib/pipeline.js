@@ -460,6 +460,10 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       internalPN: cand.internalPN || "", inPLM: cand._source === "ezplm", approved: cand.approved || false,
       isPreferred, overallScore: result.overallScore,
       authoritative: isAuthoritative(cand),
+      // 硬约束未知一律 fail-closed：ALT-003 中 Flash 设为硬约束但候选该字段为 N/A，
+      // 评分层已标 NEEDS_VERIFICATION，但此前 pipeline 未据此拦截，仍进了正式 Top N。
+      needsVerification: !!result.needsVerification,
+      verifyReasons: result.verifyReasons || [],
       market: cand.market || null,
       extraParams: cand.extraParams || [],
       technical: result.technical, evidenceCoverage: result.evidenceCoverage,
@@ -494,6 +498,8 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
         internalPN: cand.internalPN || "", inPLM: cand._source === "ezplm", approved: cand.approved || false,
         isPreferred, overallScore: result.overallScore,
         authoritative: isAuthoritative(cand),
+        needsVerification: !!result.needsVerification,
+        verifyReasons: result.verifyReasons || [],
         technical: result.technical, evidenceCoverage: result.evidenceCoverage,
         sourceConfidence: result.sourceConfidence, confidence: result.confidence,
         pinVerified: result.pinVerified, _lowConfidence: true,
@@ -530,10 +536,14 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
         modeNote: PROFILES[mode]?.note || "", scenarioConstraints: scenarioApplied,
         sortedBy: "real_distributor_price" },
       original,
-      recommendations: scored.filter(x => x.authoritative).slice(0, FINAL_RESULT_COUNT),
-      pendingVerification: scored.filter(x => !x.authoritative).slice(0, FINAL_RESULT_COUNT).map(x => ({
-        ...x, pendingReason: "该型号未获权威来源确认，参数来自 AI，需人工核对",
-        replacementLevel: { level: "NEEDS_VERIFICATION", label: "待核验", color: "#8a8a8a", desc: "无权威来源确认" } })),
+      recommendations: scored.filter(x => x.authoritative && !x.needsVerification).slice(0, FINAL_RESULT_COUNT),
+      pendingVerification: scored.filter(x => !x.authoritative || x.needsVerification).slice(0, FINAL_RESULT_COUNT).map(x => ({
+        ...x,
+        pendingReason: x.needsVerification
+          ? (x.verifyReasons?.[0] || "硬约束字段缺失，无法验证是否满足")
+          : "该型号未获权威来源确认，参数来自 AI，需人工核对",
+        replacementLevel: { level: "NEEDS_VERIFICATION", label: "待核验", color: "#8a8a8a",
+          desc: x.needsVerification ? "硬约束未知，按 fail-closed 处理" : "无权威来源确认" } })),
       eliminated,
     };
   }
@@ -565,12 +575,14 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     },
     original,
     // 未经权威来源验证的候选不得占据正式 Top N，单列"待核验候选"
-    recommendations: scored.filter(x => x.authoritative).slice(0, FINAL_RESULT_COUNT),
-    pendingVerification: scored.filter(x => !x.authoritative).slice(0, FINAL_RESULT_COUNT).map(x => ({
+    recommendations: scored.filter(x => x.authoritative && !x.needsVerification).slice(0, FINAL_RESULT_COUNT),
+    pendingVerification: scored.filter(x => !x.authoritative || x.needsVerification).slice(0, FINAL_RESULT_COUNT).map(x => ({
       ...x,
-      pendingReason: "该型号未获 ezPLM 或分销商精确匹配确认，参数来自 AI，需人工核对 datasheet 后方可采用",
+      pendingReason: x.needsVerification
+        ? (x.verifyReasons?.[0] || "硬约束字段缺失，无法验证是否满足，按 fail-closed 处理")
+        : "该型号未获 ezPLM 或分销商精确匹配确认，参数来自 AI，需人工核对 datasheet 后方可采用",
       replacementLevel: { level: "NEEDS_VERIFICATION", label: "待核验", color: "#8a8a8a",
-        desc: "无权威来源确认该型号，不进入正式推荐" },
+        desc: x.needsVerification ? "硬约束未知，不进入正式推荐" : "无权威来源确认该型号，不进入正式推荐" },
     })),
     eliminated,
   };

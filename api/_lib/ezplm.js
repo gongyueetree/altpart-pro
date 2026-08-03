@@ -7,7 +7,7 @@
 
 const { callEzplm } = require("../ezplm");
 const { cache } = require("./cache");
-const { resolveIdentity, identityCacheKey, guardResource, splitMpn } = require("./part-identity");
+const { resolveIdentity, identityCacheKey, guardResource, splitMpn, dedupeVariants } = require("./part-identity");
 
 /* ---------- 防御式取值（官方未给精确结构，兼容多形态） ---------- */
 const str = v => (typeof v === "string" && v.trim() ? v.trim() : undefined);
@@ -183,6 +183,12 @@ async function queryLocalDB(partNumber, opts = {}) {
       }
     }
 
+    // 同一厂商下相同完整 MPN 只保留一条（ALT-002：LM358AD / TL431ACD 曾各出现两次且描述冲突）
+    const dd = dedupeVariants(mapped);
+    mapped = dd.records;
+    if (dd.conflicts.length) console.warn(`[ezplm] ${partNumber}: ${dd.conflicts.length} 组同 MPN 记录内容冲突`);
+    if (identity) identity = resolveIdentity(partNumber, mapped, { sourceType: "ezplm" });
+
     const r = { ok: mapped.length > 0, data: mapped };
     if (r.ok && r.data.length) {
       identity = identity || resolveIdentity(partNumber, mapped, { sourceType: "ezplm" });
@@ -209,7 +215,11 @@ async function queryLocalDB(partNumber, opts = {}) {
           _matchType: sameFamily.length ? "package_variant" : "base_device",
           needsVariantConfirm: true,
           variants: pool.map(m => ({ pn: m.partNumber, package: m.footprint || "",
-            note: m.description || "", ezplmId: m.ezplmId })).slice(0, 12),
+            note: m.description || "", ezplmId: m.ezplmId,
+            manufacturer: m.manufacturer || "",
+            duplicateConflict: !!m.duplicateConflict, duplicateCount: m.duplicateCount || 0,
+          })).slice(0, 12),
+          duplicateConflicts: dd.conflicts,
         };
         cache.set(probe, out, 86400);
         return opts.exactOnly ? null : out;
@@ -280,20 +290,43 @@ async function queryPartDetail(partNumber) {
     return res;
   };
   const referenceDesigns = await getReferenceDesigns(base.ezplmId);
+
+  // ── 顶层资源字段同样必须过守卫（ALT-001）──
+  // 此前只守卫 downloads 数组，而前端用的是 datasheetUrl / productUrl 等顶层字段，
+  // 于是 ST 的官网链接与 LM258DT.pdf 仍会显示在 TI 的 LM358AM/NOPB 页面上。
+  const blocked = [];
+  const guardUrl = (url, fname, label) => {
+    if (!url) return null;
+    const g = guardResource(identity,
+      { url, fname, manufacturer: base.manufacturer, partNumber: base.partNumber });
+    if (g.ok) return url;
+    blocked.push({ type: label, url, fname, code: g.code, reason: g.reason });
+    console.warn(`[ezplm] ${label} 被身份守卫拒绝: ${g.reason}`);
+    return null;
+  };
+  const safeDatasheet = guardUrl(base.datasheetUrl, base.datasheetFileName, "datasheet");
+  const safeSymbol = guardUrl(base.symbolUrl, base.symbolFileName, "symbol");
+  const safeFootprint = guardUrl(base.footprintFileUrl, base.footprintFileName, "footprint");
+  const safeModel3d = guardUrl(base.model3dUrl, base.model3dFileName, "model3d");
+  const safeProduct = guardUrl(base.productUrl, "", "productUrl");
+
   return {
     ...base,
+    // 用守卫后的值覆盖顶层字段，未通过的置 null 而非留旧值
+    datasheetUrl: safeDatasheet,
+    symbolUrl: safeSymbol,
+    footprintFileUrl: safeFootprint,
+    model3dUrl: safeModel3d,
+    productUrl: safeProduct,
     referenceDesigns,
     identity,
     downloads: [
-      keep({ type: "datasheet", label: "Datasheet (PDF)", url: base.datasheetUrl, fname: base.datasheetFileName || "" }, "datasheet"),
-      keep({ type: "symbol", label: "原理图符号", url: base.symbolUrl, fname: base.symbolFileName || "" }, "symbol"),
-      keep({ type: "footprint", label: "PCB 封装 (KiCad)", url: base.footprintFileUrl, fname: base.footprintFileName }, "footprint"),
-      keep({ type: "model3d", label: "3D 模型 (STEP)", url: base.model3dUrl, fname: base.model3dFileName }, "model3d"),
-    ].filter(x => x && !x.blocked),
-    blockedResources: [
-      keep({ type: "datasheet", url: base.datasheetUrl, fname: base.datasheetFileName || "" }, "datasheet"),
-      keep({ type: "symbol", url: base.symbolUrl, fname: base.symbolFileName || "" }, "symbol"),
-    ].filter(x => x && x.blocked),
+      safeDatasheet && { type: "datasheet", label: "Datasheet (PDF)", url: safeDatasheet, fname: base.datasheetFileName || "" },
+      safeSymbol && { type: "symbol", label: "原理图符号", url: safeSymbol, fname: base.symbolFileName || "" },
+      safeFootprint && { type: "footprint", label: "PCB 封装 (KiCad)", url: safeFootprint, fname: base.footprintFileName },
+      safeModel3d && { type: "model3d", label: "3D 模型 (STEP)", url: safeModel3d, fname: base.model3dFileName },
+    ].filter(Boolean),
+    blockedResources: blocked,
     suppliers: [],   // 由 /api/v2/market 提供实时价格库存
     inventory: null,
   };

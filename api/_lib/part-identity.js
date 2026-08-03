@@ -167,7 +167,51 @@ function dedupeManufacturers(list = []) {
   return [...seen.values()];
 }
 
+/**
+ * 变体列表去重（ALT-002）
+ * 同一「厂商 + 归一化完整 MPN」只保留一条。
+ * 重复记录若描述/封装/资源不同，标记 duplicateConflict 并保留冲突详情，
+ * 便于上层决定是否阻断（报告要求：冲突解决前禁止进入推荐）。
+ */
+function dedupeVariants(records = []) {
+  const norm = x => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const groups = new Map();
+  for (const r of records) {
+    const mpn = r.partNumber || r.mpn || r.pn || "";
+    if (!mpn) continue;
+    const key = `${canonicalManufacturer(r.manufacturer) || "ANY"}|${norm(mpn)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  const out = [], conflicts = [];
+  for (const [key, list] of groups) {
+    if (list.length === 1) { out.push(list[0]); continue; }
+    // 多条同 MPN：挑信息最完整的一条，其余记为冲突
+    const score = r => (r.parameters?.length || 0) * 10
+      + (r.description ? String(r.description).length : 0)
+      + (r.footprint ? 20 : 0) + (r.datasheetUrl ? 10 : 0);
+    const sorted = [...list].sort((a, b) => score(b) - score(a));
+    const primary = sorted[0];
+    const differs = sorted.slice(1).some(r =>
+      String(r.description || "") !== String(primary.description || "") ||
+      String(r.footprint || "") !== String(primary.footprint || ""));
+    if (differs) {
+      conflicts.push({
+        mpn: primary.partNumber || primary.mpn,
+        manufacturer: primary.manufacturer,
+        count: list.length,
+        variants: sorted.map(r => ({
+          ezplmId: r.ezplmId, description: r.description, footprint: r.footprint })),
+      });
+      primary.duplicateConflict = true;
+      primary.duplicateCount = list.length;
+    }
+    out.push(primary);
+  }
+  return { records: out, conflicts };
+}
+
 module.exports = {
-  splitMpn, resolveIdentity, identityCacheKey, guardResource,
+  splitMpn, resolveIdentity, identityCacheKey, guardResource, dedupeVariants,
   canonicalManufacturer, dedupeManufacturers, ORDERABLE_SUFFIX,
 };

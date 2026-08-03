@@ -156,3 +156,73 @@ test("P0：完整型号必须优先精确检索（不得因分页错过）", asy
     assert.equal(r.partNumber, "TL431ACDBVR");
   });
 });
+
+test("ALT-001：顶层资源字段也必须过身份守卫", async t => {
+  const mk = (extra) => {
+    delete require.cache[require.resolve("../api/_lib/ezplm")];
+    delete require.cache[require.resolve("../api/ezplm")];
+    require("../api/_lib/cache").cache.clear();
+    process.env.EZPLM_API_KEY = "k";
+    const proxy = require("../api/ezplm");
+    proxy.callEzplm = async () => ({ ok: true, data: [{
+      id: "u1", mpn: "LM358AMNOPB", manufacturer: { name: "Texas Instruments" },
+      category: { name: "运算放大器" }, description: "双通道、32V、1MHz 运算放大器",
+      footprint: { name: "SOIC-8" },
+      pdf: { url: extra.pdfUrl, fname: extra.pdf },
+      officialUrl: extra.official,
+      attributes: [{ name: "通道数", value: "2" }, { name: "供电电压", value: "3 to 32" }],
+    }] });
+    return require("../api/_lib/ezplm");
+  };
+
+  await t.test("异器件 datasheet 顶层字段被置 null", async () => {
+    const ez = mk({ pdf: "LM258DT.pdf", pdfUrl: "https://qn.ezplm.com/lm258.pdf",
+                    official: "https://www.ti.com/product/LM358A" });
+    const d = await ez.queryPartDetail("LM358AM/NOPB");
+    assert.equal(d.datasheetUrl, null, "LM258 的 PDF 不得作为 LM358AM/NOPB 的 datasheet");
+    assert.ok(d.blockedResources.some(b => b.type === "datasheet"));
+    assert.equal(d.downloads.find(x => x.type === "datasheet"), undefined);
+  });
+
+  await t.test("同器件资料正常保留", async () => {
+    const ez = mk({ pdf: "lm358a.pdf", pdfUrl: "https://qn.ezplm.com/lm358a.pdf",
+                    official: "https://www.ti.com/product/LM358A" });
+    const d = await ez.queryPartDetail("LM358AM/NOPB");
+    assert.ok(d.datasheetUrl, "同系列 datasheet 应保留");
+    assert.ok(d.downloads.some(x => x.type === "datasheet"));
+  });
+
+  await t.test("详情厂商与身份一致", async () => {
+    const ez = mk({ pdf: "lm358a.pdf", pdfUrl: "https://qn.ezplm.com/x.pdf", official: "" });
+    const d = await ez.queryPartDetail("LM358AM/NOPB");
+    assert.equal(d.manufacturer, "Texas Instruments");
+    assert.equal(d.identity.manufacturerName, "Texas Instruments");
+  });
+});
+
+test("ALT-002：同厂商同 MPN 去重", async t => {
+  const { dedupeVariants } = require("../api/_lib/part-identity");
+  await t.test("LM358AD 重复两条 → 合并且标冲突", () => {
+    const r = dedupeVariants([
+      { partNumber: "LM358AD", manufacturer: "Texas Instruments", description: "双通道、32V、1MHz 运算放大器", footprint: "SOIC-8", parameters: [1,2,3] },
+      { partNumber: "LM358AD", manufacturer: "Texas Instruments", description: "低输入偏置电流", footprint: "SOIC-8", parameters: [1] },
+    ]);
+    assert.equal(r.records.length, 1);
+    assert.equal(r.records[0].duplicateConflict, true);
+    assert.equal(r.conflicts.length, 1);
+  });
+  await t.test("不同厂商同 MPN 不合并", () => {
+    const r = dedupeVariants([
+      { partNumber: "LM358AD", manufacturer: "Texas Instruments", description: "TI" },
+      { partNumber: "LM358AD", manufacturer: "STMicroelectronics", description: "ST" },
+    ]);
+    assert.equal(r.records.length, 2);
+  });
+  await t.test("大小写/分隔符差异视为同一 MPN", () => {
+    const r = dedupeVariants([
+      { partNumber: "LM358AM/NOPB", manufacturer: "TI", description: "a", parameters: [1] },
+      { partNumber: "lm358amnopb", manufacturer: "Texas Instruments", description: "a" },
+    ]);
+    assert.equal(r.records.length, 1);
+  });
+});

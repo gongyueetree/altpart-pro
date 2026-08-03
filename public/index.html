@@ -28,6 +28,8 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <script type="text/babel">
 const{useState,useEffect,useRef}=React;
 
+const APP_VERSION="6.5.0";
+
 const C={
   green:"#1a6c4e",greenLight:"#e8f5ef",greenMid:"#c2e5d3",greenAccent:"#2d9d6f",
   bg:"#fff",bgSoft:"#f7faf8",border:"#d4e8dc",borderLight:"#e8f0ec",
@@ -1445,6 +1447,12 @@ function PartDetailModal({pn,rec,onClose}){
         {m&&m.priceUSD1!=null&&<p style={{fontSize:12}}>但已获取到市场行情，见上方价格</p>}
       </div>)}
 
+      {!loading&&d?.inPLM&&(d.blockedResources||[]).length>0&&(
+        <div style={{margin:"0 24px",padding:"8px 12px",borderRadius:7,background:C.amberBg,border:"1px solid #f0dca0",color:"#854f0b",fontSize:11}}>
+          ⚠ 有 {d.blockedResources.length} 项资源因与当前器件身份不符已被拦截（
+          {d.blockedResources.map(b=>b.fname||b.type).join("、")}）。
+          这些文件属于其它型号或厂商，显示出来会误导选型。
+        </div>)}
       {!loading&&d?.inPLM&&(<div>
         <div style={{display:"flex",gap:2,padding:"0 24px",borderBottom:`1px solid ${C.borderLight}`}}>
           {[["specs","技术规格"],["graphics","eCAD库"],["suppliers","供应商报价"],["downloads","资源下载"],["refs","参考设计"]].map(([k,l])=>(
@@ -1928,7 +1936,12 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
               onMouseEnter={e=>{e.currentTarget.style.background=C.greenLight;e.currentTarget.style.borderColor=C.greenMid}}
               onMouseLeave={e=>{e.currentTarget.style.background="#fff";e.currentTarget.style.borderColor=C.borderLight}}>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:13,fontWeight:600,fontFamily:"'DM Mono',monospace",color:C.green}}>{v.pn}</div>
+                <div style={{fontSize:13,fontWeight:600,fontFamily:"'DM Mono',monospace",color:C.green}}>
+                  {v.pn}
+                  {v.duplicateConflict&&<span title={`ezPLM 中有 ${v.duplicateCount} 条同型号记录且内容冲突，已合并显示信息最完整的一条`}
+                    style={{marginLeft:6,fontSize:9,padding:"1px 5px",borderRadius:3,background:C.amberBg,color:C.amber,border:"1px solid #f0dca0",fontWeight:600}}>⚠ 重复记录</span>}
+                </div>
+                {v.manufacturer&&<div style={{fontSize:10,color:C.textSec}}>{v.manufacturer}</div>}
                 {v.note&&<div style={{fontSize:10,color:C.textMute,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v.note}</div>}
               </div>
               {v.package&&<span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:C.indigoBg,color:C.indigo,fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>{v.package}</span>}
@@ -1942,7 +1955,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
         <div style={{display:"flex",gap:6,position:"relative"}}>
           <input value={mfrInput} onChange={e=>setMfrInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addMfr()}}
             placeholder="输入厂商名称搜索…" style={{flex:1,padding:"9px 12px",borderRadius:7,border:`1px solid ${C.border}`,fontSize:13}}/>
-          <button onClick={addMfr} style={{padding:"9px 16px",borderRadius:7,border:"none",background:C.indigo,color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer",opacity:mfrInput.trim()?1:0.5}}>添加</button>
+          <button onClick={addMfr} disabled={!mfrInput.trim()} aria-disabled={!mfrInput.trim()} style={{padding:"9px 16px",borderRadius:7,border:"none",background:C.indigo,color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer",opacity:mfrInput.trim()?1:0.5}}>添加</button>
           {mfrSuggest.length>0&&(<div style={{position:"absolute",top:"100%",left:0,right:70,marginTop:4,background:"#fff",border:`1px solid ${C.border}`,borderRadius:7,boxShadow:"0 8px 24px rgba(0,0,0,0.1)",zIndex:20}}>
             {mfrSuggest.map(m=><div key={m} onClick={()=>{setMfrs([...mfrs,m]);setMfrInput("")}} style={{padding:"8px 12px",fontSize:12,cursor:"pointer",borderBottom:`1px solid ${C.borderLight}`}}>{m}</div>)}
           </div>)}
@@ -2093,8 +2106,9 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
             {(result.pendingVerification||[]).length>0&&(
               <div style={{marginTop:16}}>
                 <div style={{padding:"9px 14px",borderRadius:8,background:C.amberBg,border:"1px solid #f0dca0",color:"#854f0b",fontSize:12,marginBottom:10}}>
-                  🔍 待核验候选（{result.pendingVerification.length} 个）· 这些型号未获 ezPLM 或分销商精确确认，
-                  参数多来自 AI，<b>不进入正式推荐排名</b>，仅供探索方向，务必人工核对 datasheet
+                  🔍 待核验候选（{result.pendingVerification.length} 个）· <b>不进入正式推荐排名</b>。
+                  原因为以下之一：硬约束字段缺失无法验证（按 fail-closed 处理），
+                  或型号未获 ezPLM / 分销商精确确认。请人工核对 datasheet 后再决策
                 </div>
                 {result.pendingVerification.map((rec,i)=>(
                   <div key={rec.partNumber} style={{opacity:.82}}>
@@ -2128,26 +2142,57 @@ function App(){
   const[homeErr,setHomeErr]=useState("");
   const[variantBase,setVariantBase]=useState(null);
 
+  const ANALYZE_ERR={
+    PART_NOT_FOUND:"未找到该型号，请检查拼写或输入完整订货型号",
+    PART_UNVERIFIED:"该型号未能在 ezPLM 与分销商数据库中确认存在",
+    NOT_FOUND:"未找到该型号，请检查拼写或输入完整订货型号",
+    UNPROCESSABLE:"该型号未能在权威数据源中确认存在",
+    BAD_REQUEST:"请输入有效的器件型号",
+    INTERNAL:"服务内部错误，请稍后重试",
+  };
+
   const analyze=async(pn)=>{
+    if(busy)return;
     setBusy(true);setDemoNote("");setHomeErr("");
+    const ctl=new AbortController();
+    const timer=setTimeout(()=>ctl.abort(),45000);
     try{
-      const r=await fetch("/api/v2/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({partNumber:pn})});
-      const d=await r.json().catch(()=>null);
-      if(d&&d.success&&d.original?.parameters?.length){
+      const r=await fetch("/api/v2/analyze",{method:"POST",headers:{"Content-Type":"application/json"},
+        signal:ctl.signal,body:JSON.stringify({partNumber:pn})});
+      clearTimeout(timer);
+      const ct=r.headers.get("content-type")||"";
+      const d=ct.includes("json")?await r.json().catch(()=>null):null;
+
+      if(r.ok&&d&&d.success&&d.original?.parameters?.length){
         if((d.original.variants||[]).length>=2){
-          setVariantBase(d.original);setPage("variants");   // 基础型号有多个封装变体 → 先让用户确认
+          setVariantBase(d.original);setPage("variants");
         }else{
           setOriginal({...d.original,_pkgConfirmed:true});setPage("workbench");
         }
-      }else if(pn.toUpperCase()==="STM32F103C8T6"){
-        setOriginal({...MOCK_ORIGINAL,_pkgConfirmed:true});setDemoNote("演示模式");setPage("workbench");
-      }else{
-        setHomeErr(d&&d.success===false?`参数查询失败：${d.error||"未知错误"}`:"参数查询失败，请稍后重试");
+        return;
       }
-    }catch(e){
+      if(pn.toUpperCase()==="STM32F103C8T6"){
+        setOriginal({...MOCK_ORIGINAL,_pkgConfirmed:true});setDemoNote("演示模式");setPage("workbench");
+        return;
+      }
+      // error 是对象，必须逐字段读取；直接拼进模板串会显示 [object Object]
+      const e=d&&d.error;
+      if(typeof e==="string"&&e){ setHomeErr(`查询失败：${e}`); return; }
+      if(e&&typeof e==="object"){
+        const code=e.details?.code||e.code;
+        const base=ANALYZE_ERR[code]||e.message||"查询失败";
+        const hint=e.details?.hint?` ${e.details.hint}`:"";
+        const sug=e.details?.aiSuggestion?`（是否想查 ${e.details.aiSuggestion}？）`:"";
+        setHomeErr(`${base}${sug}${hint} · ${code||""} · ${e.requestId||""}`);
+        return;
+      }
+      setHomeErr(`查询失败（HTTP ${r.status}）${d?"":"，响应非 JSON"}`);
+    }catch(err){
+      clearTimeout(timer);
+      if(err.name==="AbortError"){ setHomeErr("查询超时（45 秒），请重试"); return; }
       if(pn.toUpperCase()==="STM32F103C8T6"){setOriginal(MOCK_ORIGINAL);setPage("workbench");}
-      else setHomeErr("网络错误或超时，请重试");
-    }finally{setBusy(false);}
+      else setHomeErr(`网络错误：${err.message||"请重试"}`);
+    }finally{clearTimeout(timer);setBusy(false);}
   };
 
   return(<React.Fragment>
@@ -2157,7 +2202,7 @@ function App(){
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="#fff" strokeWidth="1.8" fill="none"/><path d="M12 7v10M7 9.5l5 3 5-3" stroke="#fff" strokeWidth="1.5" strokeLinecap="round"/></svg>
         </div>
         <div style={{flex:1}}>
-          <div data-app-version="6.4.4" style={{fontSize:17,fontWeight:700,color:C.text}}>AltPart Pro <span style={{fontSize:10,fontWeight:400,color:C.textMute}}>v6.4.3</span></div>
+          <div data-app-version={APP_VERSION} style={{fontSize:17,fontWeight:700,color:C.text}}>AltPart Pro <span style={{fontSize:10,fontWeight:400,color:C.textMute}}>v{APP_VERSION}</span></div>
           <div style={{fontSize:11,color:C.textMute}}>元器件替代决策智能体 · ezPLM集成</div>
         </div>
         {page==="workbench"&&<button onClick={()=>setPage("home")} style={{padding:"8px 16px",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.textSec,fontSize:13,cursor:"pointer"}}>← 重新搜索</button>}
@@ -2178,7 +2223,7 @@ function App(){
       {page==="workbench"&&original&&<Workbench key={original.partNumber} original={original} demoNote={demoNote} onBack={()=>setPage("home")} onSwitchVariant={v=>analyze(v.pn)}/>}
     </main>
     <footer style={{textAlign:"center",padding:"14px",borderTop:`1px solid ${C.borderLight}`,fontSize:12,color:C.textMute,background:"#fff"}}>
-      AltPart Pro v6.4.4 · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
+      AltPart Pro v{APP_VERSION} · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
     </footer>
   </React.Fragment>);
 }

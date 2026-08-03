@@ -317,3 +317,49 @@ TL431ACDBVRG4 → 提取基础型号 TL431 → keyword=TL431&pageSize=30
 兼顾了"精确型号优先"与"基础型号能找到变体"两个需求。
 
 测试：`identity-integration.test.js` 新增 3 例（含"先完整型号再基础型号"的调用顺序断言）。
+
+## v6.5.0 — 按测试报告实施 P0 修复（20260803 报告）
+
+### ALT-001 / S1：MPN 与厂商、资料不是同一器件 ✅
+根因：`queryPartDetail` 只守卫了 `downloads` 数组，而前端用的是 `...base` 展开的
+**顶层字段**（`datasheetUrl` / `productUrl` / `symbolUrl` …），这些从未过守卫。
+于是 ST 的官网链接与 `LM258DT.pdf` 仍会显示在 TI 的 LM358AM/NOPB 页面上。
+
+修复：顶层资源字段全部经 `guardResource`，未通过者**置 null**而非保留旧值；
+被拦截项进 `blockedResources`，UI 明确告知"有 N 项资源因身份不符已被拦截"。
+
+### ALT-002 / S1：同一 MPN 重复且内容冲突 ✅
+新增 `dedupeVariants()`：按「canonical 厂商 + 归一化完整 MPN」去重，
+保留信息最完整的一条；描述/封装不同的重复记录标 `duplicateConflict` 并输出 `conflicts`。
+不同厂商的同名 MPN 不合并。变体列表显示厂商与 `⚠ 重复记录` 标记。
+
+### ALT-003 / S1：硬约束为 N/A 时候选仍被正式推荐 ✅
+根因：评分层已正确标记 `needsVerification`，但 **pipeline 从不检查该标记**，
+候选照样进 `recommendations` —— fail-open。
+
+修复：正式推荐条件改为 `authoritative && !needsVerification`（fail-closed）；
+硬约束未知的候选进入待核验区并说明具体原因。
+验收用例覆盖：值为 N/A → 不进 Top N；补齐结构化值 → 恢复正常推荐；
+AI 描述称"128 KB Flash"也不能替代结构化字段通过约束。
+
+### ALT-005 / S2：`[object Object]` ✅
+`analyze` 端点的前端处理仍把 error 对象拼进模板串。
+改为逐字段读取 `code/message/requestId/details.hint/details.aiSuggestion`，
+并补上 `r.ok`、Content-Type 校验、45s AbortController、防重复点击。
+
+### ALT-010 / S3：页头页脚版本不一致 ✅
+版本号统一由 `APP_VERSION` 常量驱动，package.json 同步。
+
+### ALT-011 / S3：优选厂商空输入仍可点击 ✅
+输入为空时按钮 `disabled` + `aria-disabled`。
+
+---
+
+### 本轮未处理（报告中的其余问题）
+ALT-004（STM32F303 被误分类为 comparator）、ALT-006（交期 280/1960 天异常值）、
+ALT-007（参数单位重复显示）、ALT-008/009（键盘可访问性与 aria 状态）、
+ALT-012（浏览器端 Babel）、ALT-013（分销商页被标为制造商官网）、
+ALT-014（MD/CSV 遗漏待核验候选）、ALT-015（导出文件缺 NOT_FOR_PRODUCTION）、
+ALT-016（封装未关联 STEP）。
+
+测试：392 → 404 例，全部通过。
