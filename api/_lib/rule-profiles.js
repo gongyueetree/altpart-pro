@@ -65,9 +65,11 @@ const PROFILES = {
   },
 };
 
+const { isDomesticManufacturer } = require("./manufacturers");
+
+/** 保留旧签名（返回布尔），内部改用厂商主数据 */
 function isDomestic(manufacturer, extra = "") {
-  const t = `${manufacturer || ""} ${extra}`.toLowerCase();
-  return CN_HINTS.some(h => t.includes(h.toLowerCase()));
+  return isDomesticManufacturer(manufacturer, extra).pass === true;
 }
 
 /**
@@ -129,9 +131,16 @@ function applyProfile(mode, ctx) {
       return { pass: false, reason: `${p.label} 模式要求封装一致或同兼容族（原 ${pk.orig.value} vs 候选 ${pk.cand?.value}）` };
   }
 
-  // 国产要求
-  if (p.requireDomestic && !isDomestic(candidate.manufacturer, candidate.description))
-    return { pass: false, reason: `国产替代模式：${candidate.manufacturer || "未知厂商"} 非国产品牌` };
+  // 国产要求：区分"确认境外"与"归属未知"，后者不武断排除
+  if (p.requireDomestic) {
+    const d = isDomesticManufacturer(candidate.manufacturer, candidate.description,
+      { includeTaiwan: ctx.includeTaiwan !== false });
+    if (d.pass === false)
+      return { pass: false, reason: `国产替代模式：${candidate.manufacturer || "未知厂商"} 为${d.reason || "境外厂商"}` };
+    if (d.pass === null)
+      return { pass: true, downgrade: "NEEDS_VERIFICATION",
+        reason: `国产替代模式：${candidate.manufacturer || "该厂商"} 归属未收录，需人工确认是否国产` };
+  }
 
   // 低成本：必须有**真实分销商**报价，AI 估价不得参与正式排名
   if (p.requirePriceKnown) {

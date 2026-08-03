@@ -28,7 +28,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <script type="text/babel">
 const{useState,useEffect,useRef}=React;
 
-const APP_VERSION="6.8.2";
+const APP_VERSION="6.9.0";
 
 const C={
   green:"#1a6c4e",greenLight:"#e8f5ef",greenMid:"#c2e5d3",greenAccent:"#2d9d6f",
@@ -1769,6 +1769,62 @@ function MarketStrip({rec,market}){
   </div>);
 }
 
+
+/** 被淘汰候选的一行：展示原因 + 四项指标，前 5 个可展开逐参数对比 */
+function EliminatedRow({item,index}){
+  const d=item.detail||null;
+  const ps0=(d&&d.paramScores)||[];
+  const isTop5=index<5;
+  const showDetail=isTop5&&ps0.length>0;
+  const nOk=ps0.filter(x=>x.known&&x.score>=70).length;
+  const nBad=ps0.filter(x=>x.known&&!(x.score>=70)).length;
+  const nNone=ps0.filter(x=>!x.known).length;
+  const sorted=[...ps0].sort((a,b)=>{
+    const rank=x=>(!x.known?2:(x.score>=70?1:0));   // 不满足的排最前，用户最关心哪里不合适
+    return rank(a)-rank(b)||((a.score||0)-(b.score||0));
+  });
+  const metrics=[["技术兼容",d&&d.technical],["证据覆盖",d&&d.evidenceCoverage,"%"],
+                 ["来源可信",d&&d.sourceConfidence,"%"],["结论可信",d&&d.confidence]]
+                 .filter(x=>x[1]!==null&&x[1]!==undefined);
+  return(
+    <div style={{padding:"8px 0",borderBottom:`1px solid ${C.borderLight}`,fontSize:12}}>
+      <div style={{display:"flex",gap:12,alignItems:"baseline",flexWrap:"wrap"}}>
+        {isTop5&&<span style={{fontSize:10,padding:"1px 6px",borderRadius:3,background:C.bgSoft,border:`1px solid ${C.borderLight}`,color:C.textMute,fontFamily:"'DM Mono',monospace"}}>#{index+1}</span>}
+        <span style={{fontFamily:"'DM Mono',monospace",fontWeight:600,color:C.textSec,minWidth:130}}>{item.partNumber}</span>
+        {item.manufacturer&&<span style={{fontSize:11,color:C.textMute}}>{item.manufacturer}</span>}
+        <span style={{color:"#c0392b",flex:1,minWidth:180}}>{item.reason}</span>
+      </div>
+      {metrics.length>0&&(
+        <div style={{display:"flex",gap:14,marginTop:5,fontSize:11,color:C.textMute,flexWrap:"wrap"}}>
+          {metrics.map((m,k)=>(
+            <span key={k}>{m[0]} <b style={{color:C.textSec}}>{m[1]}{m[2]||""}</b></span>
+          ))}
+        </div>)}
+      {showDetail&&(
+        <details style={{marginTop:6}}>
+          <summary style={{cursor:"pointer",fontSize:11,color:C.indigo}}>
+            查看逐参数对比（{nOk} 项满足 · {nBad} 项不足 · {nNone} 项无数据）
+          </summary>
+          <div style={{marginTop:6,display:"grid",gap:2}}>
+            {sorted.map((ps,j)=>{
+              const state=(!ps.known)?"none":(ps.score>=70?"ok":"bad");
+              const bg=state==="ok"?C.greenLight:(state==="bad"?"#fdeaea":C.bgSoft);
+              const col=state==="ok"?C.green:(state==="bad"?"#c0392b":C.textMute);
+              return(
+                <div key={j} style={{display:"flex",gap:10,alignItems:"baseline",padding:"3px 8px",borderRadius:4,background:bg,fontSize:11}}>
+                  <span style={{minWidth:104,color:C.textSec}}>{ps.paramName}</span>
+                  <span style={{minWidth:104,fontFamily:"'DM Mono',monospace",color:C.textMute}}>{fmtVal(ps.origValue,ps.origUnit)}</span>
+                  <span style={{color:C.textMute}}>→</span>
+                  <span style={{minWidth:104,fontFamily:"'DM Mono',monospace",fontWeight:600,color:col}}>{ps.known?fmtVal(ps.value,ps.unit):"无数据"}</span>
+                  <span style={{minWidth:32,textAlign:"right",fontFamily:"'DM Mono',monospace",color:col}}>{ps.known?ps.score:"—"}</span>
+                  <span style={{flex:1,color:col}}>{ps.comment}{ps.better?" ⬆ 优于原型号":""}</span>
+                </div>);
+            })}
+          </div>
+        </details>)}
+    </div>);
+}
+
 function ResultCard({rec,index,market,pending,onShowDetail}){
   const[expanded,setExpanded]=useState(index===0);
   return(<div style={{borderRadius:10,border:`1.5px solid ${C.border}`,background:"#fff",overflow:"hidden",marginBottom:14,animation:"fadeUp 0.4s ease both",animationDelay:`${index*0.06}s`}}>
@@ -2385,12 +2441,13 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
           </React.Fragment>
           :<CompareTable original={original} recs={result.recommendations||[]}/>}
         {(result.eliminated||[]).length>0&&(<details open={!!result._noCandidates} style={{marginTop:12,borderRadius:10,border:`1px solid ${C.borderLight}`,background:"#fff"}}>
-          <summary style={{padding:"11px 16px",cursor:"pointer",fontSize:13,color:C.textSec,fontWeight:500}}>🚫 被淘汰的候选（{result.eliminated.length}个）</summary>
+          <summary style={{padding:"11px 16px",cursor:"pointer",fontSize:13,color:C.textSec,fontWeight:500}}>
+            🚫 被淘汰的候选（{result.eliminated.length}个）· 按结论可信度降序，前 5 个可展开逐参数对比
+          </summary>
           <div style={{padding:"0 16px 12px"}}>
-            {result.eliminated.map((e,i)=>(<div key={i} style={{display:"flex",gap:12,padding:"6px 0",borderBottom:`1px solid ${C.borderLight}`,fontSize:12}}>
-              <span style={{fontFamily:"'DM Mono',monospace",fontWeight:600,color:C.textSec,minWidth:130}}>{e.partNumber}</span>
-              <span style={{color:"#c0392b",flex:1}}>{e.reason}</span>
-            </div>))}
+            {result.eliminated.map((e,i)=>(
+              <EliminatedRow key={i} item={e} index={i}/>
+            ))}
           </div>
         </details>)}
       </div>)}

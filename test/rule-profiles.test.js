@@ -32,7 +32,7 @@ test("封装兼容：接受同族", async t => {
 test("国产替代：非国产必须拒绝", async t => {
   await t.test("TI 被拒绝", () => {
     const r = applyProfile("domestic", mk(100, "SOIC-8", { mfr: "Texas Instruments" }));
-    assert.equal(r.pass, false); assert.match(r.reason, /非国产/);
+    assert.equal(r.pass, false); assert.match(r.reason, /境外厂商|非国产/);
   });
   const cn = ["兆易创新 (GigaDevice)", "沁恒微电子 WCH", "圣邦微电子 SGMicro", "思瑞浦 3PEAK", "纳芯微 NOVOSENSE"];
   for (const m of cn)

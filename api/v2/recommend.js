@@ -63,7 +63,12 @@ module.exports = withCors(async (req, res) => {
           details: {
             mode, modeNote: PROFILES[mode]?.note,
             eliminatedCount: elim.length,
-            eliminated: elim.slice(0, 20),
+            // 前 5 个保留完整评分详情（用户需要知道哪些参数合适/不合适），
+            // 其余仅保留摘要以控制响应体积
+            eliminated: elim.slice(0, 20).map((e, i) => i < 5 ? e : ({ ...e, detail: e.detail
+              ? { technical: e.detail.technical, evidenceCoverage: e.detail.evidenceCoverage,
+                  sourceConfidence: e.detail.sourceConfidence, confidence: e.detail.confidence }
+              : undefined })),
             pipeline: result.pipeline,
           } });
     }

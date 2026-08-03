@@ -55,7 +55,7 @@ test("P0：五种模式必须给出可解释结果，不得笼统失败", async 
     const res = mockRes();
     await h({ method: "POST", body: { partNumber: "AD8331ARQ", mode: "domestic" } }, res);
     assert.equal(res.body.error.code, "NO_VERIFIED_CANDIDATES");
-    assert.match(JSON.stringify(res.body.error.details.eliminated), /非国产/);
+    assert.match(JSON.stringify(res.body.error.details.eliminated), /境外厂商|非国产/);
   });
 
   await t.test("功能兼容 + AI候选 → 200，但只进待核验区，不占正式 Top N", async () => {

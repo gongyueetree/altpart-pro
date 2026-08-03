@@ -3,7 +3,7 @@ const {
   useEffect,
   useRef
 } = React;
-const APP_VERSION = "6.8.2";
+const APP_VERSION = "6.9.0";
 const C = {
   green: "#1a6c4e",
   greenLight: "#e8f5ef",
@@ -4741,6 +4741,148 @@ function MarketStrip({
     }
   }, m.source === "distributor_api" ? "实时报价 ✓" : "AI估算 ⚠"));
 }
+
+/** 被淘汰候选的一行：展示原因 + 四项指标，前 5 个可展开逐参数对比 */
+function EliminatedRow({
+  item,
+  index
+}) {
+  const d = item.detail || null;
+  const ps0 = d && d.paramScores || [];
+  const isTop5 = index < 5;
+  const showDetail = isTop5 && ps0.length > 0;
+  const nOk = ps0.filter(x => x.known && x.score >= 70).length;
+  const nBad = ps0.filter(x => x.known && !(x.score >= 70)).length;
+  const nNone = ps0.filter(x => !x.known).length;
+  const sorted = [...ps0].sort((a, b) => {
+    const rank = x => !x.known ? 2 : x.score >= 70 ? 1 : 0; // 不满足的排最前，用户最关心哪里不合适
+    return rank(a) - rank(b) || (a.score || 0) - (b.score || 0);
+  });
+  const metrics = [["技术兼容", d && d.technical], ["证据覆盖", d && d.evidenceCoverage, "%"], ["来源可信", d && d.sourceConfidence, "%"], ["结论可信", d && d.confidence]].filter(x => x[1] !== null && x[1] !== undefined);
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "8px 0",
+      borderBottom: `1px solid ${C.borderLight}`,
+      fontSize: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      alignItems: "baseline",
+      flexWrap: "wrap"
+    }
+  }, isTop5 && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      padding: "1px 6px",
+      borderRadius: 3,
+      background: C.bgSoft,
+      border: `1px solid ${C.borderLight}`,
+      color: C.textMute,
+      fontFamily: "'DM Mono',monospace"
+    }
+  }, "#", index + 1), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontFamily: "'DM Mono',monospace",
+      fontWeight: 600,
+      color: C.textSec,
+      minWidth: 130
+    }
+  }, item.partNumber), item.manufacturer && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.textMute
+    }
+  }, item.manufacturer), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#c0392b",
+      flex: 1,
+      minWidth: 180
+    }
+  }, item.reason)), metrics.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 14,
+      marginTop: 5,
+      fontSize: 11,
+      color: C.textMute,
+      flexWrap: "wrap"
+    }
+  }, metrics.map((m, k) => /*#__PURE__*/React.createElement("span", {
+    key: k
+  }, m[0], " ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: C.textSec
+    }
+  }, m[1], m[2] || "")))), showDetail && /*#__PURE__*/React.createElement("details", {
+    style: {
+      marginTop: 6
+    }
+  }, /*#__PURE__*/React.createElement("summary", {
+    style: {
+      cursor: "pointer",
+      fontSize: 11,
+      color: C.indigo
+    }
+  }, "\u67E5\u770B\u9010\u53C2\u6570\u5BF9\u6BD4\uFF08", nOk, " \u9879\u6EE1\u8DB3 \xB7 ", nBad, " \u9879\u4E0D\u8DB3 \xB7 ", nNone, " \u9879\u65E0\u6570\u636E\uFF09"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 6,
+      display: "grid",
+      gap: 2
+    }
+  }, sorted.map((ps, j) => {
+    const state = !ps.known ? "none" : ps.score >= 70 ? "ok" : "bad";
+    const bg = state === "ok" ? C.greenLight : state === "bad" ? "#fdeaea" : C.bgSoft;
+    const col = state === "ok" ? C.green : state === "bad" ? "#c0392b" : C.textMute;
+    return /*#__PURE__*/React.createElement("div", {
+      key: j,
+      style: {
+        display: "flex",
+        gap: 10,
+        alignItems: "baseline",
+        padding: "3px 8px",
+        borderRadius: 4,
+        background: bg,
+        fontSize: 11
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        minWidth: 104,
+        color: C.textSec
+      }
+    }, ps.paramName), /*#__PURE__*/React.createElement("span", {
+      style: {
+        minWidth: 104,
+        fontFamily: "'DM Mono',monospace",
+        color: C.textMute
+      }
+    }, fmtVal(ps.origValue, ps.origUnit)), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: C.textMute
+      }
+    }, "\u2192"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        minWidth: 104,
+        fontFamily: "'DM Mono',monospace",
+        fontWeight: 600,
+        color: col
+      }
+    }, ps.known ? fmtVal(ps.value, ps.unit) : "无数据"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        minWidth: 32,
+        textAlign: "right",
+        fontFamily: "'DM Mono',monospace",
+        color: col
+      }
+    }, ps.known ? ps.score : "—"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        flex: 1,
+        color: col
+      }
+    }, ps.comment, ps.better ? " ⬆ 优于原型号" : ""));
+  }))));
+}
 function ResultCard({
   rec,
   index,
@@ -6464,32 +6606,15 @@ function Workbench({
       color: C.textSec,
       fontWeight: 500
     }
-  }, "\uD83D\uDEAB \u88AB\u6DD8\u6C70\u7684\u5019\u9009\uFF08", result.eliminated.length, "\u4E2A\uFF09"), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDEAB \u88AB\u6DD8\u6C70\u7684\u5019\u9009\uFF08", result.eliminated.length, "\u4E2A\uFF09\xB7 \u6309\u7ED3\u8BBA\u53EF\u4FE1\u5EA6\u964D\u5E8F\uFF0C\u524D 5 \u4E2A\u53EF\u5C55\u5F00\u9010\u53C2\u6570\u5BF9\u6BD4"), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "0 16px 12px"
     }
-  }, result.eliminated.map((e, i) => /*#__PURE__*/React.createElement("div", {
+  }, result.eliminated.map((e, i) => /*#__PURE__*/React.createElement(EliminatedRow, {
     key: i,
-    style: {
-      display: "flex",
-      gap: 12,
-      padding: "6px 0",
-      borderBottom: `1px solid ${C.borderLight}`,
-      fontSize: 12
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontFamily: "'DM Mono',monospace",
-      fontWeight: 600,
-      color: C.textSec,
-      minWidth: 130
-    }
-  }, e.partNumber), /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: "#c0392b",
-      flex: 1
-    }
-  }, e.reason)))))), detailPN && /*#__PURE__*/React.createElement(PartDetailModal, {
+    item: e,
+    index: i
+  }))))), detailPN && /*#__PURE__*/React.createElement(PartDetailModal, {
     pn: detailPN,
     rec: detailRec,
     onClose: () => {
