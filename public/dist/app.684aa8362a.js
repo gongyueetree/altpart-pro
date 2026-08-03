@@ -3,7 +3,7 @@ const {
   useEffect,
   useRef
 } = React;
-const APP_VERSION = "6.7.0";
+const APP_VERSION = "6.8.0";
 const C = {
   green: "#1a6c4e",
   greenLight: "#e8f5ef",

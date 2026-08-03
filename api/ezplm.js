@@ -16,7 +16,11 @@
  */
 const crypto = require("node:crypto");
 
-const BASE_URL = "https://www.ezplm.cn";
+// 手册示例使用 http://www.ezplm.cn；此处默认 https，可用 EZPLM_BASE_URL 覆盖
+const BASE_URL = (process.env.EZPLM_BASE_URL || "https://www.ezplm.cn").replace(/\/$/, "");
+
+// 手册：每日调用次数有上限，超出返回 429
+let quotaExhaustedUntil = 0;
 const ALLOWED_PATHS = new Set(["parts", "reference-designs"]);
 
 /** query 规范化：过滤空值 → 字典序 → encodeURIComponent 拼接 */
@@ -37,8 +41,13 @@ function buildSignature({ apiKey, method, path, params, timestamp, nonce }) {
 /** 供其它服务端模块直接调用（不走 HTTP） */
 async function callEzplm(path, params = {}) {
   const apiKey = process.env.EZPLM_API_KEY;
-  if (!apiKey) return { ok: false, configured: false, data: [] };
-  if (!ALLOWED_PATHS.has(path)) return { ok: false, error: "invalid path", data: [] };
+  if (!apiKey) return { ok: false, configured: false, kind: "not_configured", data: [] };
+  if (!ALLOWED_PATHS.has(path)) return { ok: false, kind: "invalid_path", error: "invalid path", data: [] };
+
+  // 已知当日配额耗尽时不再空转（手册：429 表示当天次数达上限，需次日或管理员重置）
+  if (Date.now() < quotaExhaustedUntil)
+    return { ok: false, kind: "quota_exhausted", status: 429, data: [],
+      error: "ezPLM 当日调用配额已用尽，需等待次日重置或联系管理员" };
 
   const apiPath = `/api/v1/api-key/${path}`;
   const timestamp = Math.floor(Date.now() / 1000).toString();
@@ -55,13 +64,25 @@ async function callEzplm(path, params = {}) {
     });
     const text = await upstream.text();
     let json; try { json = JSON.parse(text); } catch { json = { raw: text }; }
+    if (upstream.status === 429) {
+      // 熔断到次日 0 点（保守起见按 UTC+8 计算，最长不超过 24h）
+      const now = new Date();
+      const next = new Date(now.getTime() + 8 * 3600e3);
+      next.setUTCHours(24, 0, 0, 0);
+      quotaExhaustedUntil = next.getTime() - 8 * 3600e3;
+      return { ok: false, kind: "quota_exhausted", status: 429, data: [],
+        error: "ezPLM 当日调用配额已用尽（HTTP 429），需等待次日重置或联系管理员" };
+    }
     if (!upstream.ok) {
       return { ok: false, kind: "upstream_status", status: upstream.status,
         error: json?.message || json?.msg || text.slice(0, 300),
         upstreamBody: text.slice(0, 500), data: [] };
     }
+    // 手册返回结构：{ data: [...], meta: { timestamp, nextCursor, hasMore } }
     const data = Array.isArray(json?.data) ? json.data : Array.isArray(json?.items) ? json.items : Array.isArray(json) ? json : [];
-    return { ok: true, configured: true, data, raw: json };
+    const meta = json?.meta || {};
+    return { ok: true, configured: true, data, meta,
+      nextCursor: meta.nextCursor ?? null, hasMore: !!meta.hasMore, raw: json };
   } catch (e) {
     const kind = e?.name === "TimeoutError" || /abort|timeout/i.test(e?.message || "")
       ? "network_timeout" : "network_error";
@@ -104,6 +125,44 @@ module.exports = async function handler(req, res) {
   }));
 };
 
+/**
+ * 按手册的 cursor 分页自动翻页取全量
+ * 手册：parts / reference-designs 均支持 cursor + pageSize，
+ * meta.nextCursor 与 meta.hasMore 指示后续页。
+ *
+ * 此前只取首页，导致 TL431 系列这种有数百个订货号的器件，
+ * 精确型号可能落在第二页之后而被误判为"未收录"。
+ *
+ * @param maxPages 安全上限，避免配额被单次查询耗尽
+ */
+async function callEzplmPaged(path, params = {}, maxPages = 5, fetcher) {
+  const call = fetcher || module.exports.callEzplm || callEzplm;   // 可注入，便于测试
+  const all = [];
+  let cursor = null, pages = 0, lastMeta = {};
+  while (pages < maxPages) {
+    const q = { ...params };
+    if (cursor) q.cursor = cursor;
+    const r = await call(path, q);
+    if (!r.ok) return { ...r, data: all, pages };
+    all.push(...r.data);
+    lastMeta = r.meta || {};
+    pages++;
+    if (!r.hasMore || !r.nextCursor) break;
+    cursor = r.nextCursor;
+  }
+  return { ok: true, configured: true, data: all, meta: lastMeta, pages,
+    truncated: pages >= maxPages && !!lastMeta.hasMore };
+}
+
+/** 当日配额状态（手册：429 表示当天次数达上限） */
+function quotaStatus() {
+  return Date.now() < quotaExhaustedUntil
+    ? { exhausted: true, resumeAt: new Date(quotaExhaustedUntil).toISOString() }
+    : { exhausted: false };
+}
+
+module.exports.quotaStatus = quotaStatus;
 module.exports.callEzplm = callEzplm;
+module.exports.callEzplmPaged = callEzplmPaged;
 module.exports.canonicalQuery = canonicalQuery;
 module.exports.buildSignature = buildSignature;

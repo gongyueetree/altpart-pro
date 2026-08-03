@@ -5,7 +5,7 @@
 //   reference-designs?partlibId=  参考设计
 // 未配置 EZPLM_API_KEY 时自动回落内置演示数据。
 
-const { callEzplm } = require("../ezplm");
+const { callEzplm, callEzplmPaged } = require("../ezplm");
 const { cache } = require("./cache");
 const { resolveIdentity, identityCacheKey, guardResource, splitMpn, dedupeVariants, pickVariants } = require("./part-identity");
 
@@ -165,14 +165,15 @@ async function queryLocalDB(partNumber, opts = {}) {
     // pageSize=30 的结果里可能不含 TL431ACDBVRG4，于是被误判为"未收录"。
     // 因此先用**完整型号**精确查，命中即用；未命中再用基础型号找同族变体。
     let mapped = [];
-    const exactSearch = await callEzplm("parts", { keyword: partNumber, pageSize: 20 });
+    // 手册：parts 支持 cursor 分页；精确型号可能不在首页，必须翻页
+    const exactSearch = await callEzplmPaged("parts", { keyword: partNumber, pageSize: 50 }, 3);
     if (exactSearch.ok && exactSearch.data.length) mapped = exactSearch.data.map(mapEzplmPart);
 
     let identity = mapped.length ? resolveIdentity(partNumber, mapped, { sourceType: "ezplm" }) : null;
 
     // 完整型号没查到精确匹配 → 退回基础型号，扩大范围找同族
     if ((!identity || identity.matchType !== "exact") && base && base !== partNumber) {
-      const familySearch = await callEzplm("parts", { keyword: base, pageSize: 40 });
+      const familySearch = await callEzplmPaged("parts", { keyword: base, pageSize: 50 }, 4);
       if (familySearch.ok && familySearch.data.length) {
         const familyMapped = familySearch.data.map(mapEzplmPart);
         // 合并去重，保留先前结果
@@ -227,7 +228,9 @@ async function queryLocalDB(partNumber, opts = {}) {
         return opts.exactOnly ? null : out;
       }
     }
+    // 手册：空列表可能是"关键词不匹配"或"该供应商不在白名单"，两者含义不同
     cache.set(probe, false, 3600);
+    console.log(`[ezplm] ${partNumber}: 无结果（关键词不匹配，或该供应商不在白名单内）`);
     return null;
   }
   return MOCK_LOCAL_DB[partNumber.toUpperCase()] || null;
@@ -242,7 +245,7 @@ async function searchParts(keyword, pageSize = 20) {
   const ck = `ez:search:${keyword.toLowerCase()}:${pageSize}`;
   const hit = cache.get(ck);
   if (hit) return hit;
-  const r = await callEzplm("parts", { keyword, pageSize });
+  const r = await callEzplmPaged("parts", { keyword, pageSize }, 3);
   const items = r.ok ? r.data.map(mapEzplmPart) : [];
   if (items.length) cache.set(ck, items, 86400);
   return items;
@@ -264,7 +267,7 @@ async function getReferenceDesigns(ezplmId, pageSize = 10) {
   const ck = `ez:refdes:${ezplmId}`;
   const hit = cache.get(ck);
   if (hit) return hit;
-  const r = await callEzplm("reference-designs", { partlibId: ezplmId, pageSize });
+  const r = await callEzplmPaged("reference-designs", { partlibId: ezplmId, pageSize }, 2);
   const list = r.ok ? r.data.map(d => ({
     name: str(d.name) ?? "参考设计",
     link: pickUrl(d.link) ?? pickUrl(d.url),

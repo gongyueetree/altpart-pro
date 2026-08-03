@@ -12,6 +12,8 @@ module.exports = withCors(async (req, res) => {
       geminiModel: process.env.GEMINI_MODEL || "gemini-2.5-flash",
       // 签名代理使用 EZPLM_API_KEY；EZPLM_API_BASE 是 v3.x 遗留变量，已不再使用
       ezplmConfigured: !!process.env.EZPLM_API_KEY,
+      ezplmBaseUrl: (process.env.EZPLM_BASE_URL || "https://www.ezplm.cn"),
+      ezplmQuota: require("./ezplm").quotaStatus ? require("./ezplm").quotaStatus() : "unknown",
       mode: process.env.EZPLM_API_KEY ? "production" : "demo (built-in mock data)",
       scoringEngine: `v${APP_VERSION} (QuantityIR + 比较语义 + 硬约束缺失拦截 + 引脚证据门槛)`,
     },
