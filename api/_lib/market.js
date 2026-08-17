@@ -155,10 +155,16 @@ async function geminiMarketEstimate(pns) {
   const sys = `你是电子元器件市场行情分析师。估算下列型号的大致价格与供货。
 只返回JSON：{"parts":[{"pn":"型号","priceUSD1":数字或null,"priceUSD100":数字或null,"stock":"充足|一般|紧张|停产风险|未知","channels":["渠道最多3个"],"note":"15字内备注"}]}
 ⚠ 估算参考：不确定填null/"未知"，严禁编造精确数字。全部${pns.length}个都要返回。`;
-  let raw;
-  try { raw = await callGemini(sys, `估算行情：\n${pns.join("\n")}\n（联网查最新价格）`, 4096, true); }
-  catch { raw = await callGemini(sys, `估算行情：\n${pns.join("\n")}`, 4096, false); }
-  const data = repairJSON(raw);
+  // 空响应/解析失败也落入兜底（联网模式 thinking 吃预算可返回空文本而非抛错）
+  let raw = null, data = null;
+  try {
+    raw = await callGemini(sys, `估算行情：\n${pns.join("\n")}\n（联网查最新价格）`, 4096, true);
+    if (raw) data = repairJSON(raw);
+  } catch { /* 落入兜底 */ }
+  if (!data?.parts) {
+    raw = await callGemini(sys, `估算行情：\n${pns.join("\n")}`, 4096, false);
+    data = repairJSON(raw);
+  }
   const out = {};
   for (const it of (data.parts || [])) {
     if (!it?.pn) continue;

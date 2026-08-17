@@ -28,7 +28,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <script type="text/babel">
 const{useState,useEffect,useRef}=React;
 
-const APP_VERSION="6.9.9";
+const APP_VERSION="6.9.10";
 
 const C={
   green:"#1a6c4e",greenLight:"#e8f5ef",greenMid:"#c2e5d3",greenAccent:"#2d9d6f",
@@ -2646,7 +2646,7 @@ function App(){
   return(<React.Fragment>
     {staleVer&&<div style={{background:"#fff8e6",borderBottom:"1px solid #f0dca0",padding:"8px 24px",fontSize:12,color:"#854f0b",display:"flex",alignItems:"center",gap:10,justifyContent:"center"}}>
       ⚠ 页面版本 v{APP_VERSION} 落后于服务端 v{staleVer}，部分修复未生效
-      <button onClick={()=>location.reload(true)} style={{padding:"3px 12px",borderRadius:6,border:"1px solid #f0dca0",background:"#fff",color:"#854f0b",fontSize:12,fontWeight:600,cursor:"pointer"}}>刷新页面</button>
+      <button onClick={()=>location.reload()} style={{padding:"3px 12px",borderRadius:6,border:"1px solid #f0dca0",background:"#fff",color:"#854f0b",fontSize:12,fontWeight:600,cursor:"pointer"}}>刷新页面</button>
     </div>}
     <header style={{background:"#fff",borderBottom:`1px solid ${C.border}`,padding:"12px 24px"}}>
       <div style={{maxWidth:1400,margin:"0 auto",display:"flex",alignItems:"center",gap:10}}>

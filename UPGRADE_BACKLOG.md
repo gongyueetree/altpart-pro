@@ -723,3 +723,21 @@ AD8331（4,572 三角形）证明曲面剖分、分材质、棱线均已生效�
 在 1 小时内形同虚设。
 
 测试：613 → **620 例，全部通过**（含 AD8331ARQZ 场景的逐字回归）。
+
+## v6.9.10 — 系统自审轮（详见 SELF_AUDIT_v6.9.10.md）
+
+按已踩过的 9 个缺陷类别做全库定向排查，8 项修复：
+- **FIX-1/2** 主/救回循环共用 buildScoredEntry；清零两处无保护
+  `manufacturer.toLowerCase()`；救回条目补齐 market/extraParams/dataSource 漂移
+- **FIX-3/4** analyzeComponent 与 geminiMarketEstimate 的联网空响应落兜底
+  （pinout 同类潜伏，只 catch 抛错不够）
+- **FIX-5** recommend 入口净化 preferredManufacturers（非字符串输入曾可
+  一路走到 .toLowerCase() 崩成 INTERNAL_ERROR）
+- **FIX-8** comp 缓存键补参考参数指纹 —— 缓存值按当次原型号 param_1..N 对齐，
+  换个原型号命中旧缓存即**评分静默错位**（silent-wrong，无任何报错）
+- **FIX-6/7** image/* Content-Type 具体化；location.reload 废弃参数
+
+审查后确认非缺陷 4 项、扫描器局限 1 项（eslint-scope 后端方案误报弃用），
+均如实记录在自审报告中供外部审计交叉验证。
+
+测试：620 → **633 例，全部通过**；两个历史崩溃复现脚本重跑通过。

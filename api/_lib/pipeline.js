@@ -378,6 +378,15 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   // ─── Step 3: 候选参数获取（本地库批量优先）───
   onProgress?.(`正在校验 ${candidatePNs.length} 个候选（本地库优先）...`);
 
+  // 候选参数缓存的参考指纹：缓存值按当次原型号的 param_1..N 对齐，
+  // 键若只含候选型号，换个原型号命中旧缓存时 param_1 语义已变 → 评分静默错位。
+  // 指纹取参数 id+归一化名，原型号参数集不同则各存各的。
+  const { normalizeName } = require("./param-align");
+  const refFp = params.map(p => `${p.id}:${normalizeName(p.name || p.nameEn || "")}`).join("|");
+  let refHash = 0;
+  for (let i = 0; i < refFp.length; i++) refHash = (refHash * 31 + refFp.charCodeAt(i)) >>> 0;
+  const compKey = pn => `comp:${String(pn).toLowerCase()}:${refHash.toString(36)}`;
+
   // 3a. 批量查本地库
   const localBatch = await queryLocalDBBatch(candidatePNs);
   console.log(`[Pipeline] Local DB batch: ${Object.keys(localBatch).length}/${candidatePNs.length} hits`);
@@ -396,7 +405,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       fetchResults.push(alignLocalParams(localHit, params));
     } else {
       // 先查缓存
-      const cached = cache.get(`comp:${pn.toLowerCase()}`);
+      const cached = cache.get(compKey(pn));
       if (cached) { fetchResults.push(cached); }
       else needLookup.push(pn);
     }
@@ -417,7 +426,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     results.forEach((r, i) => {
       const pn = toLookup[i];
       if (r.status === "fulfilled" && r.value) {
-        cache.set(`comp:${pn.toLowerCase()}`, r.value, 7 * 86400);
+        cache.set(compKey(pn), r.value, 7 * 86400);
         stats.aiLookups++;
         fetchResults.push(r.value);
       } else {
@@ -508,6 +517,31 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       conditionMismatch: ps.conditionMismatch, sourceLabel: ps.sourceLabel,
     })),
   });
+  // scored 条目装配器 —— 主循环与救回循环共用。
+  // 此前两处各自手写对象字面量，已漂移出三个字段差异：救回条目缺 market、
+  // 缺 extraParams、dataSource 不认 digikey。单一装配器根治该类漂移。
+  const mfrOf = c => String(c?.manufacturer || "");
+  const buildScoredEntry = (cand, result, extra = {}) => ({
+    partNumber: cand.partNumber, manufacturer: mfrOf(cand), description: cand.description,
+    internalPN: cand.internalPN || "", inPLM: cand._source === "ezplm", approved: cand.approved || false,
+    isPreferred: preferredManufacturers.some(m => {
+      const a = mfrOf(cand).toLowerCase(), b = String(m || "").toLowerCase();
+      return !!a && !!b && (a.includes(b) || b.includes(a));   // 空串不算命中，也不再可能崩
+    }),
+    overallScore: result.overallScore,
+    authoritative: isAuthoritative(cand),
+    needsVerification: !!result.needsVerification,
+    verifyReasons: result.verifyReasons || [],
+    market: cand.market || null,
+    extraParams: cand.extraParams || [],
+    technical: result.technical, evidenceCoverage: result.evidenceCoverage,
+    sourceConfidence: result.sourceConfidence, confidence: result.confidence,
+    pinVerified: result.pinVerified,
+    paramScores: result.paramScores, dimensionScores: result.dimensionScores,
+    replacementLevel: result.replacementLevel,
+    dataSource: cand._source === "ezplm" ? "本地数据库" : /^digikey/.test(cand._source||"") ? "DigiKey" : /^mouser/.test(cand._source||"") ? "Mouser" : "AI搜索",
+    ...extra,
+  });
   const eliminated = [
     ...aiEliminated.map(e => ({ partNumber: e.pn || e.partNumber || "", manufacturer: "", reason: e.reason || "AI 排除", stage: "ai_filter" })),
     // 查询失败的候选不是"技术上不合适"，而是"没查到数据"，需分开说明
@@ -551,27 +585,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       result.replacementLevel = { level: "NEEDS_VERIFICATION", label: "待核验", color: "#8a8a8a", desc: gate.reason };
     }
 
-    const isPreferred = preferredManufacturers.some(m =>
-      cand.manufacturer.toLowerCase().includes(m.toLowerCase()) || m.toLowerCase().includes(cand.manufacturer.toLowerCase())
-    );
-    scored.push({
-      partNumber: cand.partNumber, manufacturer: cand.manufacturer, description: cand.description,
-      internalPN: cand.internalPN || "", inPLM: cand._source === "ezplm", approved: cand.approved || false,
-      isPreferred, overallScore: result.overallScore,
-      authoritative: isAuthoritative(cand),
-      // 硬约束未知一律 fail-closed：ALT-003 中 Flash 设为硬约束但候选该字段为 N/A，
-      // 评分层已标 NEEDS_VERIFICATION，但此前 pipeline 未据此拦截，仍进了正式 Top N。
-      needsVerification: !!result.needsVerification,
-      verifyReasons: result.verifyReasons || [],
-      market: cand.market || null,
-      extraParams: cand.extraParams || [],
-      technical: result.technical, evidenceCoverage: result.evidenceCoverage,
-      sourceConfidence: result.sourceConfidence, confidence: result.confidence,
-      pinVerified: result.pinVerified,
-      paramScores: result.paramScores, dimensionScores: result.dimensionScores,
-      replacementLevel: result.replacementLevel,
-      dataSource: cand._source === "ezplm" ? "本地数据库" : cand._source === "digikey" ? "DigiKey" : "AI搜索",
-    });
+    scored.push(buildScoredEntry(cand, result));
   }
 
   // 淘汰保底：合格者为空时，从低分候选中救回Top3（其P0/N/X等级已表达低可信度）
@@ -591,22 +605,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       result.replacementLevel = { level: "NEEDS_VERIFICATION", label: "待核验", color: "#8a8a8a", desc: gate.reason };
     }
 
-    const isPreferred = preferredManufacturers.some(m =>
-        cand.manufacturer.toLowerCase().includes(m.toLowerCase()) || m.toLowerCase().includes(cand.manufacturer.toLowerCase()));
-      scored.push({
-        partNumber: cand.partNumber, manufacturer: cand.manufacturer, description: cand.description,
-        internalPN: cand.internalPN || "", inPLM: cand._source === "ezplm", approved: cand.approved || false,
-        isPreferred, overallScore: result.overallScore,
-        authoritative: isAuthoritative(cand),
-        needsVerification: !!result.needsVerification,
-        verifyReasons: result.verifyReasons || [],
-        technical: result.technical, evidenceCoverage: result.evidenceCoverage,
-        sourceConfidence: result.sourceConfidence, confidence: result.confidence,
-        pinVerified: result.pinVerified, _lowConfidence: true,
-        paramScores: result.paramScores, dimensionScores: result.dimensionScores,
-        replacementLevel: result.replacementLevel,
-        dataSource: cand._source === "ezplm" ? "本地数据库" : "AI搜索",
-      });
+      scored.push(buildScoredEntry(cand, result, { _lowConfidence: true }));
     }
     for (const { cand, result } of lowScored.slice(3)) {
       eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer,

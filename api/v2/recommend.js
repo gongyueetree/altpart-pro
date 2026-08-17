@@ -38,10 +38,15 @@ module.exports = withCors(async (req, res) => {
   const stages = [];
   const mark = (name, extra = {}) => stages.push({ stage: name, atMs: Date.now() - t0, ...extra });
 
+  // 入口净化：优选厂商必须是字符串数组。客户端/第三方调用传入
+  // 对象或数字时，此前会一路走到 .toLowerCase() 才崩成 INTERNAL_ERROR。
+  const cleanMfrs = (Array.isArray(preferredManufacturers) ? preferredManufacturers : [])
+    .map(m => String(m ?? "").trim()).filter(Boolean).slice(0, 10);
+
   try {
     const result = await runPipeline({
       partNumber, mode, scenario, application,
-      preferredManufacturers: preferredManufacturers || [],
+      preferredManufacturers: cleanMfrs,
       constraints: constraints || {},
       priorityOrder, originalData: original,
       onProgress: msg => mark("progress", { msg }),

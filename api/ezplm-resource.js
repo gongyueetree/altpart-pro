@@ -95,6 +95,8 @@ function guessType(pathname) {
   if (/\.(kicad_mod|kicad_sym|lib|wrl)$/i.test(pathname)) return "text/plain; charset=utf-8";
   if (/\.pdf$/i.test(pathname)) return "application/pdf";
   if (/\.(step|stp)$/i.test(pathname)) return "application/octet-stream";
-  if (/\.(png|jpe?g|gif|webp|svg)$/i.test(pathname)) return "image/*";
+  // "image/*" 不是合法响应 Content-Type（那是 Accept 语法），部分浏览器会拒绝内联显示
+  const img = pathname.match(/\.(png|jpe?g|gif|webp|svg)$/i)?.[1]?.toLowerCase();
+  if (img) return { png:"image/png", jpg:"image/jpeg", jpeg:"image/jpeg", gif:"image/gif", webp:"image/webp", svg:"image/svg+xml" }[img];
   return "application/octet-stream";
 }

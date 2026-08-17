@@ -159,15 +159,18 @@ variants 规则：如果输入是不含封装/温度后缀的基础型号（如 
 
 ⚠ 参数必须严格属于该品类：MCU 不能出现运放参数，运放不能出现 MCU 参数。`;
 
-  let raw;
+  // 联网优先，但**空响应与解析失败也必须落入兜底** —— 只 catch 抛错不够：
+  // 2.5-flash 联网模式不关 thinking，预算被吃光时会返回空文本而非抛错
+  // （pinout 曾因此线上一律"按约定返回空"）。
+  let raw = null, result = null;
   try {
-    // 优先联网搜索（原器件参数准确性最重要，且analyze是独立单次调用，时间预算充足）
     raw = await callGemini(sys, `联网搜索 "${partNumber} datasheet" 并分析该器件`, 8192, true);
-  } catch (e) {
-    console.warn(`[analyze] 联网模式失败(${e.message})，降级为模型知识模式`);
+    if (raw) result = repairJSON(raw);
+  } catch (e) { console.warn(`[analyze] 联网模式失败(${e.message})，降级为模型知识模式`); }
+  if (!result || !result.partNumber) {
     raw = await callGemini(sys, `分析器件：${partNumber}`, 4096, false);
+    result = repairJSON(raw);
   }
-  const result = repairJSON(raw);
 
   // 标注数据来源（AI 搜索 → 低可信，scoring 会降权）
   if (Array.isArray(result.parameters)) {
