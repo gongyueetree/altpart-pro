@@ -28,7 +28,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <script type="text/babel">
 const{useState,useEffect,useRef}=React;
 
-const APP_VERSION="6.9.6";
+const APP_VERSION="6.9.7";
 
 const C={
   green:"#1a6c4e",greenLight:"#e8f5ef",greenMid:"#c2e5d3",greenAccent:"#2d9d6f",
@@ -1151,6 +1151,12 @@ function Step3DViewer({stepUrl,fileName,compact}){
       scene.background=new THREE.Color(0xf7faf8);
       const group=new THREE.Group();
       let triCount=0;
+      // 第一遍：只建几何并统计，材质放到判定完"谁是本体"之后再定。
+      // 元器件 STEP（尤其 SamacSys/ezPLM 来源）常不带颜色信息，整体渲成一色灰
+      // 就会"盒子糊成一片"。参考 SamacSys 查看器的做法：
+      //   最大的网格 = 塑封本体（深色、哑光）；其余小网格 = 引脚/焊盘（亮银、金属）。
+      const parts=[];
+      const tmpV=new THREE.Vector3();
       for(const mesh of result.meshes){
         triCount+=Math.floor((mesh.index?.array?.length||mesh.attributes.position.array.length/3)/3);
         const geo=new THREE.BufferGeometry();
@@ -1158,10 +1164,28 @@ function Step3DViewer({stepUrl,fileName,compact}){
         if(mesh.attributes.normal)geo.setAttribute("normal",new THREE.Float32BufferAttribute(mesh.attributes.normal.array,3));
         else geo.computeVertexNormals();
         if(mesh.index)geo.setIndex(mesh.index.array);
-        const color=mesh.color?new THREE.Color(mesh.color[0],mesh.color[1],mesh.color[2]):new THREE.Color(0x8a8f98);
-        // metalness 高时无环境贴图的面会发黑；side:DoubleSide 是"整块发黑"的解药 ——
-        // OCCT 剖分出的网格常有局部法线反向，单面材质从外看那些面就是黑的
-        group.add(new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color,metalness:.08,roughness:.55,side:THREE.DoubleSide})));
+        geo.computeBoundingBox();
+        const d=geo.boundingBox.getSize(tmpV);
+        parts.push({geo,vol:Math.max(d.x,1e-6)*Math.max(d.y,1e-6)*Math.max(d.z,1e-6),
+          stepColor:mesh.color?new THREE.Color(mesh.color[0],mesh.color[1],mesh.color[2]):null});
+      }
+      const maxVol=Math.max(...parts.map(x=>x.vol));
+      // STEP 自带多种颜色时尊重原色；单一色/无色则按体积启发式分本体/引脚
+      const distinctColors=new Set(parts.filter(x=>x.stepColor).map(x=>x.stepColor.getHexString()));
+      const useStepColors=distinctColors.size>=2;
+      // side:DoubleSide —— OCCT 网格常有局部反向法线，单面材质从外看那些面是黑的
+      const bodyMat=new THREE.MeshStandardMaterial({color:0x3a3f45,metalness:.05,roughness:.7,side:THREE.DoubleSide});
+      const pinMat=new THREE.MeshStandardMaterial({color:0xc8ccd2,metalness:.85,roughness:.35,side:THREE.DoubleSide});
+      const edgeMat=new THREE.LineBasicMaterial({color:0x2b2f35,transparent:true,opacity:.5});
+      const drawEdges=triCount<200000;   // 超大模型不画边线，避免线段数爆炸
+      for(const part of parts){
+        const isBody=part.vol>=maxVol*0.5;
+        const mat=useStepColors&&part.stepColor
+          ?new THREE.MeshStandardMaterial({color:part.stepColor,metalness:isBody?.05:.6,roughness:isBody?.7:.4,side:THREE.DoubleSide})
+          :(isBody?bodyMat:pinMat);
+        group.add(new THREE.Mesh(part.geo,mat));
+        // 棱线 —— SamacSys/KiCad 式清晰度的另一半来源：无边线的平面盒会互相糊掉
+        if(drawEdges)group.add(new THREE.LineSegments(new THREE.EdgesGeometry(part.geo,25),edgeMat));
       }
       const box=new THREE.Box3().setFromObject(group);
       const center=box.getCenter(new THREE.Vector3());
@@ -1217,6 +1241,9 @@ function Step3DViewer({stepUrl,fileName,compact}){
         // dispose() 只释放 GPU 资源，不归还 context；不 forceContextLoss 的话
         // 反复开关几次就会耗尽浏览器的 context 名额，之后一律「Error creating WebGL context」
         try{pmrem?.dispose()}catch{}
+        // 边线让几何对象翻倍，逐一释放，避免反复开关累积显存
+        try{group.traverse(o=>{o.geometry?.dispose?.();
+          (Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m?.dispose?.())})}catch{}
         try{renderer.forceContextLoss()}catch{}
         renderer.dispose();host.innerHTML="";};
       setMeshCount(result.meshes.length);setStats3d({tri:triCount,parseMs,env:envOk});setPhase("ready");

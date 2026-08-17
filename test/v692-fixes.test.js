@@ -342,8 +342,11 @@ test("3D 渲染：光照与尺寸", async t => {
     assert.match(src, /HemisphereLight/);
     assert.match(src, /fill=new THREE\.DirectionalLight/);
   });
-  await t.test("低金属度，避免无环境贴图的金属面发黑", () => {
-    assert.match(src, /metalness:\.08/);
+  await t.test("材质策略（v6.9.7 起分本体/引脚）：本体低金属哑光，引脚金属亮银", () => {
+    // v6.9.4 的统一 metalness:.08 已被本体/引脚分材质取代：
+    // 引脚金属度回升是安全的 —— IBL 环境贴图已提供反射来源
+    assert.match(src, /metalness:\.05,roughness:\.7/);   // bodyMat
+    assert.match(src, /metalness:\.85,roughness:\.35/);  // pinMat
     assert.doesNotMatch(src, /metalness:\.25/);
   });
   await t.test("按真实容器宽重设缓冲（ResizeObserver + 挂载后校正）", () => {
