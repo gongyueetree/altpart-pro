@@ -28,7 +28,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <script type="text/babel">
 const{useState,useEffect,useRef}=React;
 
-const APP_VERSION="6.9.3";
+const APP_VERSION="6.9.4";
 
 const C={
   green:"#1a6c4e",greenLight:"#e8f5ef",greenMid:"#c2e5d3",greenAccent:"#2d9d6f",
@@ -1142,20 +1142,30 @@ function Step3DViewer({stepUrl,fileName,compact}){
         else geo.computeVertexNormals();
         if(mesh.index)geo.setIndex(mesh.index.array);
         const color=mesh.color?new THREE.Color(mesh.color[0],mesh.color[1],mesh.color[2]):new THREE.Color(0x8a8f98);
-        group.add(new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color,metalness:.25,roughness:.6})));
+        // metalness 高时无环境贴图的面会发黑（金属反射依赖环境），塑封体应接近电介质
+        group.add(new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color,metalness:.08,roughness:.55})));
       }
       const box=new THREE.Box3().setFromObject(group);
       const center=box.getCenter(new THREE.Vector3());
       const size=box.getSize(new THREE.Vector3()).length()||10;
       group.position.sub(center);
       scene.add(group);
-      scene.add(new THREE.AmbientLight(0xffffff,.75));
-      const dir=new THREE.DirectionalLight(0xffffff,1.1);dir.position.set(1,1.4,1);scene.add(dir);
+      // 光照：three r155 起默认物理光照单位，旧的 ambient 0.75 + 单向平行光在新单位下
+      // 明显偏暗，且背面只有环境光 —— 线上反馈"背面的管脚都看不清"。
+      // 改为半球光打底（上下异色模拟天空/地面反射）+ 主光 + 背面补光，三面受光。
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f98, 1.6));
+      scene.add(new THREE.AmbientLight(0xffffff, .5));
+      const dir=new THREE.DirectionalLight(0xffffff, 2.2);dir.position.set(1,1.4,1);scene.add(dir);
+      const fill=new THREE.DirectionalLight(0xffffff, 1.2);fill.position.set(-1,.6,-1);scene.add(fill);
       const camera=new THREE.PerspectiveCamera(45,width/height,size/500,size*20);
       camera.position.set(size*.7,size*.6,size*.9);
       const renderer=createRenderer(THREE);
       renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
       renderer.setSize(width,height);
+      // 画布不随 CSS 拉伸：模糊的另一来源是加载瞬间 clientWidth 偏小（容器还在布局中），
+      // 画布按小尺寸建缓冲、再被 CSS 拉大 → 整体发糊。固定 display:block 并在挂载后
+      // 用 ResizeObserver 按真实容器宽重设缓冲。
+      renderer.domElement.style.display="block";
       host.appendChild(renderer.domElement);
       const onCtxLost=ev=>{ev.preventDefault();setPhase("error");
         setMsg("WebGL 上下文丢失（通常是同时打开的 3D 视图过多或显卡驱动重置），可点重试")};
@@ -1165,9 +1175,15 @@ function Step3DViewer({stepUrl,fileName,compact}){
       let raf=0;
       const tick=()=>{raf=requestAnimationFrame(tick);controls.update();renderer.render(scene,camera)};
       tick();
-      const onResize=()=>{const w=host.clientWidth||width;camera.aspect=w/height;camera.updateProjectionMatrix();renderer.setSize(w,height)};
+      const onResize=()=>{const w=host.clientWidth||width;if(Math.abs(w-renderer.domElement.clientWidth)<2)return;
+        camera.aspect=w/height;camera.updateProjectionMatrix();renderer.setSize(w,height)};
       window.addEventListener("resize",onResize);
+      // window resize 抓不到"容器自身变宽"（布局完成/侧栏折叠/弹窗放大），ResizeObserver 才行
+      const ro=typeof ResizeObserver!=="undefined"?new ResizeObserver(onResize):null;
+      ro?.observe(host);
+      onResize();   // 挂载后立即按真实宽度校正一次（加载瞬间测到的宽度常偏小）
       disposeRef.current=()=>{cancelAnimationFrame(raf);window.removeEventListener("resize",onResize);
+        ro?.disconnect();
         renderer.domElement.removeEventListener("webglcontextlost",onCtxLost);
         controls.dispose();
         // dispose() 只释放 GPU 资源，不归还 context；不 forceContextLoss 的话

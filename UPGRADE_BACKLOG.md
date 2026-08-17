@@ -575,3 +575,31 @@ Error: The pattern "api/v2/ecad.js" defined in `functions` doesn't match
 两种失败形态（重叠 / 匹配不到）均已实测能被拦下。
 
 测试：575 → **578 例，全部通过**。
+
+## v6.9.4 — 候选合并崩溃（P0，v6.9.2 引入）+ 3D 渲染质量
+
+### ① `(kept.parameters || []).filter is not a function`（立即弹出，非重试可解）
+v6.9.2 新增的 candidate-merge 假设候选 `parameters` 是**数组**，
+而生产管线里它是**按原型号参数 id 键控的对象映射**
+（`alignLocalParams` / `fetchComponentFromAPIs` 的产物，评分层按 `parameters[paramId]` 取值）。
+对象上调 `.filter` 即崩，发生在查询完成后、评分之前 —— 所以是"直接弹出"而非跑了很久。
+
+**为什么测试全绿仍上线崩**：我的单测用数组 mock，与生产形状不符。
+mock 形状必须取自真实产出代码，不能凭接口想象。
+
+修复：合并模块重写为原生支持对象映射（键即对齐好的参数 id，按键并集合并，
+无需名称匹配），数组形态保留为兜底路径；`exactMatch` 任一侧为 false 时
+合并结果不得声称 exact（isAuthoritative 依赖它）；extraParams 按名称并集。
+回归测试改用对象映射形状，并加"线上崩溃逐字复现"用例。
+
+### ② 3D 模型发糊、背面管脚看不清
+两个独立成因：
+- **暗**：three r155 起默认物理光照单位，旧的 ambient 0.75 + 单向平行光在
+  新单位下整体偏暗，且背面只有环境光。改为半球光(1.6)打底 + 主光(2.2) +
+  背面补光(1.2)三面受光；`metalness .25→.08`（无环境贴图时金属面发黑，
+  塑封体本应接近电介质）。
+- **糊**：加载瞬间容器还在布局中，`clientWidth` 偏小，画布按小尺寸建缓冲
+  再被 CSS 拉大。改用 ResizeObserver 按真实容器宽重设缓冲，挂载后立即校正，
+  且只监听 window resize 抓不到的"容器自身变宽"也能触发。
+
+测试：578 → **585 例，全部通过**。

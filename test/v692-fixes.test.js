@@ -11,61 +11,98 @@ const SRC = fs.readFileSync(path.join(__dirname, "..", "public", "index.src.html
 
 // ─────────────────────────────────────────────────────────────
 test("重复候选按 MPN + 厂商合并", async t => {
-  const p = (name, value, unit = "") => ({ name, value, unit });
+  // ⚠ 生产形状：候选 parameters 是按原型号参数 id 键控的**对象映射**
+  // （alignLocalParams / fetchComponentFromAPIs 产出），不是数组。
+  // v6.9.2 首版用数组 mock 测试，全绿上线即崩 `.filter is not a function`。
+  // 本组测试必须用对象映射形状。
+  const P = (value, unit = "", source = "ezplm") => ({ value, unit, source });
+
+  await t.test("对象映射形状不崩溃（线上 req_msworx9smn73o2 的回归）", () => {
+    const cand = src => ({ partNumber: "LM358DR", manufacturer: "TI", _source: src,
+      parameters: { p1: P("32", "V", src) } });
+    assert.doesNotThrow(() => mergeCandidates([cand("ai_search"), cand("ezplm")]));
+  });
 
   await t.test("同一颗料的不同写法合并为一条", () => {
     const { merged, duplicates } = mergeCandidates([
-      { partNumber: "LM358DR", manufacturer: "Texas Instruments", _source: "ai_search", parameters: [p("供电电压", "32", "V")] },
-      { partNumber: "lm358-dr", manufacturer: "TI", _source: "ezplm", parameters: [p("带宽", "1.1", "MHz")] },
+      { partNumber: "LM358DR", manufacturer: "Texas Instruments", _source: "ai_search",
+        parameters: { p1: P("32", "V", "ai_search") } },
+      { partNumber: "lm358-dr", manufacturer: "TI", _source: "ezplm",
+        parameters: { p2: P("1.1", "MHz") } },
     ]);
     assert.equal(merged.length, 1);
     assert.equal(duplicates.length, 1);
   });
 
-  await t.test("合并后参数取并集，不再各持半份", () => {
+  await t.test("合并后参数按键并集，不再各持半份", () => {
     const { merged } = mergeCandidates([
-      { partNumber: "LM358DR", manufacturer: "TI", _source: "ai_search", parameters: [p("供电电压", "32", "V")] },
-      { partNumber: "LM358DR", manufacturer: "TI", _source: "ezplm", parameters: [p("带宽", "1.1", "MHz")] },
+      { partNumber: "LM358DR", manufacturer: "TI", _source: "ai_search",
+        parameters: { p1: P("32", "V", "ai_search"), p2: P("N/A") } },
+      { partNumber: "LM358DR", manufacturer: "TI", _source: "ezplm",
+        parameters: { p2: P("1.1", "MHz") } },
     ]);
-    const names = merged[0].parameters.map(x => x.name);
-    assert.ok(names.includes("供电电压"));
-    assert.ok(names.includes("带宽"));
+    assert.equal(merged[0].parameters.p1.value, "32");
+    assert.equal(merged[0].parameters.p2.value, "1.1");
   });
 
-  await t.test("值冲突时保留高优先级来源（ezPLM 胜 AI）", () => {
+  await t.test("值冲突时保留高优先级来源（ezPLM 胜 AI），冲突有记录", () => {
     const { merged } = mergeCandidates([
-      { partNumber: "LM358DR", manufacturer: "TI", _source: "ai_search", parameters: [p("供电电压", "32", "V")] },
-      { partNumber: "LM358DR", manufacturer: "TI", _source: "ezplm", parameters: [p("供电电压", "36", "V")] },
+      { partNumber: "LM358DR", manufacturer: "TI", _source: "ai_search",
+        parameters: { p1: P("32", "V", "ai_search") } },
+      { partNumber: "LM358DR", manufacturer: "TI", _source: "ezplm",
+        parameters: { p1: P("36", "V", "ezplm") } },
     ]);
-    const v = merged[0].parameters.find(x => x.name === "供电电压");
-    assert.equal(v.value, "36");
+    assert.equal(merged[0].parameters.p1.value, "36");
     assert.equal(merged[0]._paramConflicts.length, 1);
     assert.equal(merged[0]._paramConflicts[0].dropped.value, "32");
   });
 
-  await t.test("N/A 不覆盖已有真实值，也会被真实值补上", () => {
+  await t.test("N/A 不覆盖真实值，也会被真实值补上", () => {
     const { merged } = mergeCandidates([
-      { partNumber: "X1", manufacturer: "SGMicro", _source: "ezplm", parameters: [p("带宽", "N/A")] },
-      { partNumber: "X1", manufacturer: "SGMicro", _source: "digikey", parameters: [p("带宽", "1.1", "MHz")] },
+      { partNumber: "X1", manufacturer: "SGMicro", _source: "ezplm",
+        parameters: { p1: P("N/A") } },
+      { partNumber: "X1", manufacturer: "SGMicro", _source: "digikey",
+        parameters: { p1: P("1.1", "MHz", "digikey") } },
     ]);
-    assert.equal(merged[0].parameters.find(x => x.name === "带宽").value, "1.1");
+    assert.equal(merged[0].parameters.p1.value, "1.1");
+  });
+
+  await t.test("任一侧非 exact，合并结果不得声称 exact", () => {
+    const { merged } = mergeCandidates([
+      { partNumber: "X1", manufacturer: "TI", _source: "digikey", exactMatch: true,
+        parameters: { p1: P("1", "V", "digikey") } },
+      { partNumber: "X1", manufacturer: "TI", _source: "mouser", exactMatch: false,
+        parameters: { p1: P("1", "V", "mouser") } },
+    ]);
+    assert.equal(merged[0].exactMatch, false);
   });
 
   await t.test("不同厂商的同名 MPN 不合并", () => {
     const { merged } = mergeCandidates([
-      { partNumber: "LM358", manufacturer: "Texas Instruments", _source: "ezplm", parameters: [] },
-      { partNumber: "LM358", manufacturer: "STMicroelectronics", _source: "ezplm", parameters: [] },
+      { partNumber: "LM358", manufacturer: "Texas Instruments", _source: "ezplm", parameters: {} },
+      { partNumber: "LM358", manufacturer: "STMicroelectronics", _source: "ezplm", parameters: {} },
     ]);
     assert.equal(merged.length, 2);
   });
 
   await t.test("不同型号互不影响，且保留首次出现顺序", () => {
     const { merged } = mergeCandidates([
-      { partNumber: "A1", manufacturer: "TI", _source: "ezplm", parameters: [] },
-      { partNumber: "B2", manufacturer: "TI", _source: "ezplm", parameters: [] },
-      { partNumber: "a-1", manufacturer: "TI", _source: "ai_search", parameters: [] },
+      { partNumber: "A1", manufacturer: "TI", _source: "ezplm", parameters: {} },
+      { partNumber: "B2", manufacturer: "TI", _source: "ezplm", parameters: {} },
+      { partNumber: "a-1", manufacturer: "TI", _source: "ai_search", parameters: {} },
     ]);
     assert.deepEqual(merged.map(m => m.partNumber), ["A1", "B2"]);
+  });
+
+  await t.test("数组形态兜底路径仍可用", () => {
+    const { merged } = mergeCandidates([
+      { partNumber: "Y1", manufacturer: "TI", _source: "ai_search",
+        parameters: [{ name: "供电电压", value: "32", unit: "V" }] },
+      { partNumber: "Y1", manufacturer: "TI", _source: "ezplm",
+        parameters: [{ name: "带宽", value: "1.1", unit: "MHz" }] },
+    ]);
+    const names = merged[0].parameters.map(x => x.name);
+    assert.ok(names.includes("供电电压") && names.includes("带宽"));
   });
 
   await t.test("来源优先级：ezPLM > 分销商 > AI", () => {
@@ -290,3 +327,21 @@ function globToRe(g) {
   }
   return new RegExp("^" + out + "$");
 }
+
+// ─────────────────────────────────────────────────────────────
+// v6.9.4：3D 渲染质量（背面发黑 / 画面发糊）
+test("3D 渲染：光照与尺寸", async t => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "public", "index.src.html"), "utf8");
+  await t.test("三面受光：半球光 + 主光 + 背面补光", () => {
+    assert.match(src, /HemisphereLight/);
+    assert.match(src, /fill=new THREE\.DirectionalLight/);
+  });
+  await t.test("低金属度，避免无环境贴图的金属面发黑", () => {
+    assert.match(src, /metalness:\.08/);
+    assert.doesNotMatch(src, /metalness:\.25/);
+  });
+  await t.test("按真实容器宽重设缓冲（ResizeObserver + 挂载后校正）", () => {
+    assert.match(src, /ResizeObserver/);
+    assert.match(src, /onResize\(\);\s+\/\/ 挂载后立即按真实宽度校正/);
+  });
+});
