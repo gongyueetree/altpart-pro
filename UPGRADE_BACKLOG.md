@@ -547,3 +547,31 @@ Golden Set、Playwright E2E、前端模块化）。
 - 第 5 项只做了**同一 MPN** 的合并；不同订货号但同芯片（如 `XX-T` 与 `XX-TR`）仍各占一位，需接 `variantKinship` 做系列级收敛
 - 第 3 项 grounding 开启后引脚准确率需真实环境验证，沙箱无密钥
 - 第 2 项 WebGL 预检与降级路径无浏览器 E2E 覆盖，仅逻辑层断言
+
+## v6.9.3 — 修复 v6.9.1 引入的 Vercel 构建失败
+
+现象：`git push` 后 Vercel 构建 1 秒即失败
+```
+Error: The pattern "api/v2/ecad.js" defined in `functions` doesn't match
+       any Serverless Functions inside the `api` directory.
+```
+
+根因是我在 v6.9.1 加的 `vercel.json`：为把 pdfjs 字体/CMap 打进 ecad 函数，
+在已有的 `api/**/*.js` 之外又加了一条 `api/v2/ecad.js`。
+**Vercel 要求同一个函数文件只能被一个 `functions` 模式匹配** ——
+广模式已经认领了全部文件，具体模式便"匹配不到任何函数"，报的却是上面这句
+容易误导的错误（听起来像文件不存在，实际是被抢占了）。
+
+修复：
+- 合并为单条 `api/**/*.js`，`includeFiles` 挂在其上（字体+CMap 共 2.5MB，全函数携带可接受）
+- 放弃 ecad 单独提到 1024MB 的内存设置 —— 它与广模式无法并存，且 512MB 本就够用
+
+### 防止再犯
+本地测试全绿仍会在 Vercel 构建失败，这类配置错误此前没有任何拦截。
+现已在两处加校验，规则与 Vercel 一致（每个模式必须匹配到 ≥1 个文件、且模式之间不得重叠）：
+- `scripts/check.mjs` —— `npm run check` 与 CI 都会跑
+- `test/v692-fixes.test.js` —— 随 `npm test` 执行
+
+两种失败形态（重叠 / 匹配不到）均已实测能被拦下。
+
+测试：575 → **578 例，全部通过**。

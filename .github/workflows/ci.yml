@@ -20,7 +20,9 @@ jobs:
       # 测试全部使用 mock / fixture，不依赖任何生产密钥
       - name: Install
         run: npm install --no-audit --no-fund
-      - name: Static check (backend syntax + frontend undefined refs)
+      # 含 vercel.json functions 模式校验：这类配置错误本地测试全绿仍会让
+      # Vercel 构建失败（v6.9.1 就是这样上线失败的），必须在 CI 拦下
+      - name: Static check (backend syntax + frontend refs + vercel.json)
         run: node scripts/check.mjs
       - name: Unit & contract tests
         run: npm test

@@ -55,4 +55,63 @@ try {
     console.warn("⚠ 缺少 acorn/acorn-jsx/eslint-scope，跳过前端检查（npm i -D acorn acorn-jsx eslint-scope）");
   } else { console.error("✗ 前端检查失败:", e.message); fail++; }
 }
+
+// ── vercel.json 的 functions 模式校验 ──
+// Vercel 规则：每个 functions 键都必须匹配到至少一个 api 下的函数文件，
+// 且**同一个文件不能被两个模式同时匹配**。违反任一条都是构建期硬失败：
+//   Error: The pattern "api/v2/ecad.js" defined in `functions` doesn't match
+//          any Serverless Functions inside the `api` directory.
+// 这类错误只在 Vercel 构建时才暴露，本地测试全绿也照样上线失败，故在此提前拦截。
+try {
+  const cfg = JSON.parse(readFileSync("vercel.json", "utf8"));
+  const patterns = Object.keys(cfg.functions || {});
+  if (patterns.length) {
+    const apiFiles = walk("api").map(f => f.split(path.sep).join("/"));
+    // glob → 正则。先把通配符换成占位符再拼正则，
+    // 否则后一步的 ? 替换会把前一步插入的 (?:...)? 语法打碎。
+    const toRe = g => {
+      let out = "";
+      for (let i = 0; i < g.length; i++) {
+        const c = g[i];
+        if (c === "*") {
+          if (g[i + 1] === "*") {
+            i++;
+            if (g[i + 1] === "/") { i++; out += "(?:[^/]+/)*"; }
+            else out += ".*";
+          } else out += "[^/]*";
+        } else if (c === "?") out += "[^/]";
+        else if (c === "{") {
+          const end = g.indexOf("}", i);
+          if (end < 0) { out += "\\{"; continue; }
+          out += "(?:" + g.slice(i + 1, end).split(",")
+            .map(x => x.replace(/[.+^${}()|[\]\\*?]/g, "\\$&")).join("|") + ")";
+          i = end;
+        } else out += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+      }
+      return new RegExp("^" + out + "$");
+    };
+    const owner = new Map();
+    let bad = 0;
+    for (const pat of patterns) {
+      const re = toRe(pat);
+      const matched = apiFiles.filter(f => re.test(f));
+      if (!matched.length) {
+        console.error(`✗ vercel.json functions 模式 "${pat}" 未匹配到任何 api 下的函数文件`);
+        bad++;
+        continue;
+      }
+      for (const f of matched) {
+        if (owner.has(f)) {
+          console.error(`✗ vercel.json 模式重叠：${f} 同时被 "${owner.get(f)}" 与 "${pat}" 匹配`);
+          bad++;
+        } else owner.set(f, pat);
+      }
+    }
+    if (bad) fail++;
+    else console.log(`✓ vercel.json functions 模式校验通过（${patterns.length} 个模式，覆盖 ${owner.size} 个函数）`);
+  }
+} catch (e) {
+  console.error("✗ vercel.json 校验失败:", e.message); fail++;
+}
+
 process.exit(fail ? 1 : 0);

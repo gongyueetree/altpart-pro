@@ -66,9 +66,11 @@ test("pdfjs 标准字体与 CMap 资源可解析", async t => {
     assert.match(doc.pages[0].text, /1 VCC Power supply/);
   });
 
-  await t.test("vercel.json 已把字体资源打进 ecad 函数", () => {
+  await t.test("vercel.json 已把字体资源打进函数包", () => {
     const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "vercel.json"), "utf8"));
-    const inc = cfg.functions?.["api/v2/ecad.js"]?.includeFiles || "";
+    // v6.9.3 起合并为单条 api/**/*.js —— Vercel 不允许 functions 模式重叠，
+    // 因此不能再为 ecad 单列一条。只断言"字体资源确实被某个模式携带"。
+    const inc = Object.values(cfg.functions || {}).map(v => v.includeFiles || "").join(" ");
     assert.match(inc, /pdfjs-dist/);
     assert.match(inc, /standard_fonts/);
     assert.match(inc, /cmaps/);

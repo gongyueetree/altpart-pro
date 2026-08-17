@@ -234,3 +234,59 @@ function mockRes() {
     send(b) { this._body = b; return this; },
   };
 }
+
+// ─────────────────────────────────────────────────────────────
+// v6.9.3：vercel.json functions 模式（本次 Vercel 构建失败的直接原因）
+test("vercel.json functions 模式合法", async t => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "vercel.json"), "utf8"));
+  const patterns = Object.keys(cfg.functions || {});
+
+  await t.test("每个模式都能匹配到 api 下的函数文件，且互不重叠", () => {
+    const apiDir = path.join(__dirname, "..", "api");
+    const walk = d => fs.readdirSync(d).flatMap(f => {
+      const p = path.join(d, f);
+      return fs.statSync(p).isDirectory() ? walk(p) : (p.endsWith(".js") ? [p] : []);
+    });
+    const files = walk(apiDir).map(f => path.relative(path.join(__dirname, ".."), f).split(path.sep).join("/"));
+    assert.ok(files.length > 0, "api 目录下应有函数文件");
+
+    const owner = new Map();
+    for (const pat of patterns) {
+      const re = globToRe(pat);
+      const matched = files.filter(f => re.test(f));
+      assert.ok(matched.length > 0, `模式 "${pat}" 未匹配到任何函数文件 —— Vercel 会构建失败`);
+      for (const f of matched) {
+        assert.ok(!owner.has(f), `${f} 被 "${owner.get(f)}" 与 "${pat}" 同时匹配 —— Vercel 不允许模式重叠`);
+        owner.set(f, pat);
+      }
+    }
+  });
+
+  await t.test("pdfjs 字体与 CMap 仍被打进函数包", () => {
+    const inc = Object.values(cfg.functions || {}).map(v => v.includeFiles || "").join(" ");
+    assert.match(inc, /pdfjs-dist/);
+    assert.match(inc, /standard_fonts/);
+    assert.match(inc, /cmaps/);
+  });
+});
+
+function globToRe(g) {
+  let out = "";
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i];
+    if (c === "*") {
+      if (g[i + 1] === "*") {
+        i++;
+        if (g[i + 1] === "/") { i++; out += "(?:[^/]+/)*"; } else out += ".*";
+      } else out += "[^/]*";
+    } else if (c === "?") out += "[^/]";
+    else if (c === "{") {
+      const end = g.indexOf("}", i);
+      if (end < 0) { out += "\\{"; continue; }
+      out += "(?:" + g.slice(i + 1, end).split(",")
+        .map(x => x.replace(/[.+^${}()|[\]\\*?]/g, "\\$&")).join("|") + ")";
+      i = end;
+    } else out += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp("^" + out + "$");
+}
