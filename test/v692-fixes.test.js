@@ -194,9 +194,10 @@ test("AI 引脚：EP 焊盘不计入编号引脚数", async t => {
     assert.match(src, /const numbered = pins\.filter\(p => !isEpPin\(p\)\)/);
     assert.match(src, /numbered\.length !== pinCount/);
   });
-  await t.test("引脚查询已开启联网检索", () => {
+  await t.test("引脚查询含联网检索（v6.9.5 起两段式：8192 检索 + 记忆兜底）", () => {
     const src = fs.readFileSync(path.resolve(__dirname, "..", "api/_lib/pinout.js"), "utf8");
-    assert.match(src, /callGemini\(sys, `查询 \$\{partNumber\} 的引脚定义`, 4096, true\)/);
+    assert.match(src, /callGemini\(sys, `查询 \$\{partNumber\} 的引脚定义`, 8192, true\)/);
+    assert.match(src, /callGemini\(sys, `查询 \$\{partNumber\} 的引脚定义`, 4096, false\)/);
   });
   await t.test("被拒时带结构化原因回前端", () => {
     const src = fs.readFileSync(path.resolve(__dirname, "..", "api/v2/ecad.js"), "utf8");

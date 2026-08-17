@@ -62,18 +62,29 @@ ${pinCount ? `编号引脚必须恰好 ${pinCount} 项，编号 1..${pinCount}�
 
   const reject = r => { cache.set(ck, false, 3600); return { pins: [], rejected: r }; };
 
-  let raw;
+  // 两段式调用。
+  // 第一段（联网检索）：引脚名是强事实性内容，先检索 datasheet 原文最能压幻觉。
+  //   但 useSearch=true 时 callGemini 不关 thinking（2.5-flash 是思考模型），
+  //   4096 预算会被思考+检索引用吃光导致**空响应** —— v6.9.2 切到联网后
+  //   线上一律"按约定返回空"正是这个原因。预算提到 8192。
+  // 第二段（模型记忆兜底）：第一段空/解析失败时退回 JSON 模式（关 thinking），
+  //   常见型号靠记忆仍能给出引脚名；反幻觉的统计拦截对两段同样生效。
+  let raw = null, stage = "grounded";
   try {
-    // 开启 google_search grounding：引脚名是强事实性内容，靠模型记忆最容易整份编造，
-    // 让它先检索到 datasheet 原文再作答，是降低幻觉最直接的手段。
-    raw = await callGemini(sys, `查询 ${partNumber} 的引脚定义`, 4096, true);
-  } catch (e) {
-    console.warn("[pinout] AI 调用失败:", e.message);
-    return reject({ ...REJECT.CALL_FAILED, detail: e.message });
+    raw = await callGemini(sys, `查询 ${partNumber} 的引脚定义`, 8192, true);
+  } catch (e) { console.warn("[pinout] 联网检索失败:", e.message); }
+  let data = null;
+  if (raw) { try { data = repairJSON(raw); } catch { /* 落入兜底 */ } }
+  if (!data?.pins?.length) {
+    stage = "memory";
+    try {
+      raw = await callGemini(sys, `查询 ${partNumber} 的引脚定义`, 4096, false);
+    } catch (e) {
+      console.warn("[pinout] AI 调用失败:", e.message);
+      return reject({ ...REJECT.CALL_FAILED, detail: e.message });
+    }
+    try { data = repairJSON(raw); } catch { return reject(REJECT.BAD_JSON); }
   }
-
-  let data;
-  try { data = repairJSON(raw); } catch { return reject(REJECT.BAD_JSON); }
 
   const seen = new Set();
   const pins = (data?.pins || [])
@@ -125,7 +136,10 @@ ${pinCount ? `编号引脚必须恰好 ${pinCount} 项，编号 1..${pinCount}�
     confidence: ["high", "medium", "low"].includes(data?.confidence) ? data.confidence : "low",
     warning,
     source: "ai_pinout",
-    note: "引脚名由 AI 提供，未经 datasheet 核对",
+    stage,   // grounded=经联网检索 / memory=模型记忆兜底，前端据此提示可信度
+    note: stage === "grounded"
+      ? "引脚名由 AI 联网检索 datasheet 后提供，仍需人工核对"
+      : "引脚名来自 AI 模型记忆（联网检索未获结果），可信度较低，务必核对 datasheet",
   };
   cache.set(ck, result, TTL);
   return result;

@@ -494,6 +494,20 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   const { calculateScore } = require("./scoring-node");
   const scored = [];
   const lowScored = [];   // 低于淘汰线的候选（若最终无合格者，从中救回Top3）
+  // 淘汰详情构造器 —— 必须在**所有**使用它的循环之外定义。
+  // 此前 detailOf 定义在第一个评分循环内部，"保底救回"循环里的 mode_gate 分支
+  // 也调用了它 → ReferenceError: detailOf is not defined → INTERNAL_ERROR。
+  // 触发条件：全部候选低于淘汰线 + 救回的候选又被模式门槛拦下（国产替代最易命中）。
+  const buildDetail = result => ({
+    technical: result.technical, evidenceCoverage: result.evidenceCoverage,
+    sourceConfidence: result.sourceConfidence, confidence: result.confidence,
+    paramScores: (result.paramScores || []).map(ps => ({
+      paramName: ps.paramName, origValue: ps.origValue, origUnit: ps.origUnit,
+      value: ps.value, unit: ps.unit, score: ps.score, comment: ps.comment,
+      known: ps.known, semantics: ps.semantics, better: ps.better,
+      conditionMismatch: ps.conditionMismatch, sourceLabel: ps.sourceLabel,
+    })),
+  });
   const eliminated = [
     ...aiEliminated.map(e => ({ partNumber: e.pn || e.partNumber || "", manufacturer: "", reason: e.reason || "AI 排除", stage: "ai_filter" })),
     // 查询失败的候选不是"技术上不合适"，而是"没查到数据"，需分开说明
@@ -504,23 +518,11 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     const result = calculateScore(params, cand, order, effectiveConstraints);
 
     // 功能类别不符 → 直接淘汰（替代料的前提是同类器件）
-    // 淘汰项也保留评分详情：用户需要知道"哪些参数合适、哪些不合适"，
-    // 而不只是一句"综合可信度过低"
-    const detailOf = () => ({
-      technical: result.technical, evidenceCoverage: result.evidenceCoverage,
-      sourceConfidence: result.sourceConfidence, confidence: result.confidence,
-      paramScores: (result.paramScores || []).map(ps => ({
-        paramName: ps.paramName, origValue: ps.origValue, origUnit: ps.origUnit,
-        value: ps.value, unit: ps.unit, score: ps.score, comment: ps.comment,
-        known: ps.known, semantics: ps.semantics, better: ps.better,
-        conditionMismatch: ps.conditionMismatch, sourceLabel: ps.sourceLabel,
-      })),
-    });
-
+    // 淘汰项也保留评分详情：用户需要知道"哪些参数合适、哪些不合适"
     if (cand._categoryMismatch) {
       eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer,
         reason: `功能类别不符：原型号为「${cand._categoryMismatch.orig}」，该型号为「${cand._categoryMismatch.cand}」，不可作为替代`,
-        stage: "category", detail: detailOf() });
+        stage: "category", detail: buildDetail(result) });
       continue;
     }
     // 硬约束淘汰
@@ -528,7 +530,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     // 导致这个分支永远不触发，硬约束违规的候选混进了低分池而非被明确淘汰。
     if (result.rejected) {
       eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer,
-        reason: result.rejectReason || "不满足硬约束", stage: "hard_constraint", detail: detailOf() });
+        reason: result.rejectReason || "不满足硬约束", stage: "hard_constraint", detail: buildDetail(result) });
       continue;
     }
     // 分数过低：先收集，最后统一决定是否淘汰（避免纯AI模式下全军覆没）
@@ -540,7 +542,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     // ── 替代模式确定性门槛（此前仅靠提示词，无程序化约束）──
     const gate = applyProfile(mode, { original, candidate: cand, scoreResult: result, procurement });
     if (!gate.pass) {
-      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: gate.reason, stage: "mode_gate", detail: detailOf() });
+      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: gate.reason, stage: "mode_gate", detail: buildDetail(result) });
       continue;
     }
     if (gate.downgrade === "NEEDS_VERIFICATION") {
@@ -580,7 +582,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       // ── 替代模式确定性门槛（此前仅靠提示词，无程序化约束）──
     const gate = applyProfile(mode, { original, candidate: cand, scoreResult: result, procurement });
     if (!gate.pass) {
-      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: gate.reason, stage: "mode_gate", detail: detailOf() });
+      eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer, reason: gate.reason, stage: "mode_gate", detail: buildDetail(result) });
       continue;
     }
     if (gate.downgrade === "NEEDS_VERIFICATION") {
@@ -606,36 +608,16 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
         dataSource: cand._source === "ezplm" ? "本地数据库" : "AI搜索",
       });
     }
-    const elimDetail = result => ({
-      technical: result.technical, evidenceCoverage: result.evidenceCoverage,
-      sourceConfidence: result.sourceConfidence, confidence: result.confidence,
-      paramScores: (result.paramScores || []).map(ps => ({
-        paramName: ps.paramName, origValue: ps.origValue, origUnit: ps.origUnit,
-        value: ps.value, unit: ps.unit, score: ps.score, comment: ps.comment,
-        known: ps.known, semantics: ps.semantics, better: ps.better,
-        conditionMismatch: ps.conditionMismatch, sourceLabel: ps.sourceLabel,
-      })),
-    });
     for (const { cand, result } of lowScored.slice(3)) {
       eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer,
         reason: `综合可信度过低 (${result.overallScore}分)`, stage: "low_score",
-        score: result.overallScore, detail: elimDetail(result) });
+        score: result.overallScore, detail: buildDetail(result) });
     }
   } else {
-    const elimDetail = result => ({
-      technical: result.technical, evidenceCoverage: result.evidenceCoverage,
-      sourceConfidence: result.sourceConfidence, confidence: result.confidence,
-      paramScores: (result.paramScores || []).map(ps => ({
-        paramName: ps.paramName, origValue: ps.origValue, origUnit: ps.origUnit,
-        value: ps.value, unit: ps.unit, score: ps.score, comment: ps.comment,
-        known: ps.known, semantics: ps.semantics, better: ps.better,
-        conditionMismatch: ps.conditionMismatch, sourceLabel: ps.sourceLabel,
-      })),
-    });
     for (const { cand, result } of lowScored) {
       eliminated.push({ partNumber: cand.partNumber, manufacturer: cand.manufacturer,
         reason: `综合可信度过低 (${result.overallScore}分 < ${ELIMINATION_THRESHOLD}分)`, stage: "low_score",
-        score: result.overallScore, detail: elimDetail(result) });
+        score: result.overallScore, detail: buildDetail(result) });
     }
   }
 

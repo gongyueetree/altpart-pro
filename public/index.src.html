@@ -28,7 +28,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <script type="text/babel">
 const{useState,useEffect,useRef}=React;
 
-const APP_VERSION="6.9.4";
+const APP_VERSION="6.9.5";
 
 const C={
   green:"#1a6c4e",greenLight:"#e8f5ef",greenMid:"#c2e5d3",greenAccent:"#2d9d6f",
@@ -1125,7 +1125,17 @@ function Step3DViewer({stepUrl,fileName,compact}){
       const bytes=new Uint8Array(await res.arrayBuffer());
 
       setMsg("正在解析几何…");
-      const result=occt.ReadStepFile(bytes,null);
+      // 三角剖分精度 —— 这是"模型发糊、引脚糊成一片"的真正根源。
+      // ReadStepFile 第二参传 null 时用 OCCT 默认 deflection，剖分很粗，
+      // 细小引脚只分到几个三角形。KiCad 的 3D 查看器同样基于 OCCT 曲面剖分，
+      // 用的是"相对包围盒的线性偏差 + 角度偏差"的精细设置，这里对齐它：
+      // 线性偏差 = 包围盒对角线的 0.05%，角度偏差 0.3rad（≈17°）。
+      const result=occt.ReadStepFile(bytes,{
+        linearUnit:"millimeter",
+        linearDeflectionType:"bounding_box_ratio",
+        linearDeflection:0.0005,
+        angularDeflection:0.3,
+      });
       if(!result?.success||!result.meshes?.length)throw new Error("STEP 解析成功但没有可显示的网格");
 
       const host=hostRef.current;
@@ -1142,8 +1152,9 @@ function Step3DViewer({stepUrl,fileName,compact}){
         else geo.computeVertexNormals();
         if(mesh.index)geo.setIndex(mesh.index.array);
         const color=mesh.color?new THREE.Color(mesh.color[0],mesh.color[1],mesh.color[2]):new THREE.Color(0x8a8f98);
-        // metalness 高时无环境贴图的面会发黑（金属反射依赖环境），塑封体应接近电介质
-        group.add(new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color,metalness:.08,roughness:.55})));
+        // metalness 高时无环境贴图的面会发黑；side:DoubleSide 是"整块发黑"的解药 ——
+        // OCCT 剖分出的网格常有局部法线反向，单面材质从外看那些面就是黑的
+        group.add(new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color,metalness:.08,roughness:.55,side:THREE.DoubleSide})));
       }
       const box=new THREE.Box3().setFromObject(group);
       const center=box.getCenter(new THREE.Vector3());
