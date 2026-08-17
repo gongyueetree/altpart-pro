@@ -28,7 +28,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <script type="text/babel">
 const{useState,useEffect,useRef}=React;
 
-const APP_VERSION="6.9.7";
+const APP_VERSION="6.9.8";
 
 const C={
   green:"#1a6c4e",greenLight:"#e8f5ef",greenMid:"#c2e5d3",greenAccent:"#2d9d6f",
@@ -1174,9 +1174,9 @@ function Step3DViewer({stepUrl,fileName,compact}){
       const distinctColors=new Set(parts.filter(x=>x.stepColor).map(x=>x.stepColor.getHexString()));
       const useStepColors=distinctColors.size>=2;
       // side:DoubleSide —— OCCT 网格常有局部反向法线，单面材质从外看那些面是黑的
-      const bodyMat=new THREE.MeshStandardMaterial({color:0x3a3f45,metalness:.05,roughness:.7,side:THREE.DoubleSide});
-      const pinMat=new THREE.MeshStandardMaterial({color:0xc8ccd2,metalness:.85,roughness:.35,side:THREE.DoubleSide});
-      const edgeMat=new THREE.LineBasicMaterial({color:0x2b2f35,transparent:true,opacity:.5});
+      const bodyMat=new THREE.MeshStandardMaterial({color:0x2e3237,metalness:.05,roughness:.82,envMapIntensity:.9,side:THREE.DoubleSide});
+      const pinMat=new THREE.MeshStandardMaterial({color:0xd5d8dc,metalness:.9,roughness:.28,envMapIntensity:1.25,side:THREE.DoubleSide});
+      const edgeMat=new THREE.LineBasicMaterial({color:0x2b2f35,transparent:true,opacity:.3});
       const drawEdges=triCount<200000;   // 超大模型不画边线，避免线段数爆炸
       for(const part of parts){
         const isBody=part.vol>=maxVol*0.5;
@@ -1185,7 +1185,7 @@ function Step3DViewer({stepUrl,fileName,compact}){
           :(isBody?bodyMat:pinMat);
         group.add(new THREE.Mesh(part.geo,mat));
         // 棱线 —— SamacSys/KiCad 式清晰度的另一半来源：无边线的平面盒会互相糊掉
-        if(drawEdges)group.add(new THREE.LineSegments(new THREE.EdgesGeometry(part.geo,25),edgeMat));
+        if(drawEdges)group.add(new THREE.LineSegments(new THREE.EdgesGeometry(part.geo,30),edgeMat));
       }
       const box=new THREE.Box3().setFromObject(group);
       const center=box.getCenter(new THREE.Vector3());
@@ -1194,6 +1194,11 @@ function Step3DViewer({stepUrl,fileName,compact}){
       scene.add(group);
       // renderer 必须先于环境贴图创建（PMREMGenerator 依赖它）
       const renderer=createRenderer(THREE);
+      // ACES 色调映射：three 默认 NoToneMapping，在 IBL 场景下高光硬截、
+      // 整体发灰发平 —— 这是与 SamacSys 渲染观感差距的主因
+      renderer.toneMapping=THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure=1.15;
+      renderer.outputColorSpace=THREE.SRGBColorSpace;
       renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
       renderer.setSize(width,height);
       // 画布不随 CSS 拉伸：模糊的另一来源是加载瞬间 clientWidth 偏小（容器还在布局中），
@@ -1213,7 +1218,7 @@ function Step3DViewer({stepUrl,fileName,compact}){
           envOk=true;
         }catch(e){console.warn("[3D] 环境贴图生成失败，回退直射光:",e.message)}
       }
-      scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f98, envOk?0.9:1.6));
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f98, envOk?1.1:1.8));
       const dir=new THREE.DirectionalLight(0xffffff, envOk?1.6:2.2);dir.position.set(1,1.4,1);scene.add(dir);
       const fill=new THREE.DirectionalLight(0xffffff, envOk?0.8:1.2);fill.position.set(-1,.6,-1);scene.add(fill);
       if(!envOk)scene.add(new THREE.AmbientLight(0xffffff, .5));

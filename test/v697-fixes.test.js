@@ -9,15 +9,16 @@ const SRC = fs.readFileSync(path.join(__dirname, "..", "public/index.src.html"),
 test("3D 呈现：分材质与棱线", async t => {
   await t.test("体积启发式：最大网格为本体，其余为引脚", () => {
     assert.match(SRC, /const isBody=part\.vol>=maxVol\*0\.5/);
-    assert.match(SRC, /bodyMat=new THREE\.MeshStandardMaterial\(\{color:0x3a3f45/);
-    assert.match(SRC, /pinMat=new THREE\.MeshStandardMaterial\(\{color:0xc8ccd2,metalness:\.85/);
+    // 材质具体数值随视觉调优迭代，由最新版测试（v698）约束
+    assert.match(SRC, /const bodyMat=new THREE\.MeshStandardMaterial/);
+    assert.match(SRC, /const pinMat=new THREE\.MeshStandardMaterial/);
   });
   await t.test("STEP 自带多色时尊重原色，单色/无色才用启发式", () => {
     assert.match(SRC, /distinctColors\.size>=2/);
     assert.match(SRC, /useStepColors&&part\.stepColor/);
   });
   await t.test("棱线绘制（EdgesGeometry），超大模型自动关闭", () => {
-    assert.match(SRC, /new THREE\.EdgesGeometry\(part\.geo,25\)/);
+    assert.match(SRC, /new THREE\.EdgesGeometry\(part\.geo,\d+\)/);   // 阈值数值由 v698 约束
     assert.match(SRC, /drawEdges=triCount<200000/);
   });
   await t.test("销毁时逐一释放几何与材质（边线让几何翻倍）", () => {
