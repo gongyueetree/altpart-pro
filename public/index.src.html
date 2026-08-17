@@ -28,7 +28,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <script type="text/babel">
 const{useState,useEffect,useRef}=React;
 
-const APP_VERSION="6.9.5";
+const APP_VERSION="6.9.6";
 
 const C={
   green:"#1a6c4e",greenLight:"#e8f5ef",greenMid:"#c2e5d3",greenAccent:"#2d9d6f",
@@ -1020,6 +1020,7 @@ const OCCT_LOCAL="/vendor/occt-import-js.js";
 const OCCT_CDN="https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.js";
 const THREE_CDN="https://esm.sh/three@0.185.0";
 const ORBIT_CDN="https://esm.sh/three@0.185.0/examples/jsm/controls/OrbitControls.js";
+const ENV_CDN="https://esm.sh/three@0.185.0/examples/jsm/environments/RoomEnvironment.js";
 
 // ── WebGL 预检与容错 ──────────────────────────────────────────
 // 线上报「THREE.WebGLRenderer: Error creating WebGL context」有三类成因，
@@ -1088,6 +1089,7 @@ function Step3DViewer({stepUrl,fileName,compact}){
   const[phase,setPhase]=useState("idle");   // idle|loading|ready|error
   const[msg,setMsg]=useState("");
   const[meshCount,setMeshCount]=useState(0);
+  const[stats3d,setStats3d]=useState(null);   // {tri,parseMs,env} 诊断信息，也是"新代码已生效"的凭据
   const hostRef=useRef(null);
   const disposeRef=useRef(null);
   useEffect(()=>()=>disposeRef.current?.(),[]);
@@ -1111,8 +1113,9 @@ function Step3DViewer({stepUrl,fileName,compact}){
       // 用 new Function 构造，使动态 import 在运行时才出现，绕过编译期转换。
       // three.js 是标准 ESM，用动态 import；OCCT 是 UMD，用 script 标签
       const dynImport=new Function("u","return import(u)");
-      const [occt,THREE,orbitMod]=await Promise.all([
+      const [occt,THREE,orbitMod,envMod]=await Promise.all([
         loadOcct(setMsg),dynImport(THREE_CDN),dynImport(ORBIT_CDN),
+        dynImport(ENV_CDN).catch(()=>null),   // 环境贴图可选：CDN 失败仍可渲染，只是质感降级
       ]);
       const OrbitControls=orbitMod.OrbitControls;
 
@@ -1130,12 +1133,14 @@ function Step3DViewer({stepUrl,fileName,compact}){
       // 细小引脚只分到几个三角形。KiCad 的 3D 查看器同样基于 OCCT 曲面剖分，
       // 用的是"相对包围盒的线性偏差 + 角度偏差"的精细设置，这里对齐它：
       // 线性偏差 = 包围盒对角线的 0.05%，角度偏差 0.3rad（≈17°）。
+      const tParse=performance.now();
       const result=occt.ReadStepFile(bytes,{
         linearUnit:"millimeter",
         linearDeflectionType:"bounding_box_ratio",
         linearDeflection:0.0005,
         angularDeflection:0.3,
       });
+      const parseMs=Math.round(performance.now()-tParse);
       if(!result?.success||!result.meshes?.length)throw new Error("STEP 解析成功但没有可显示的网格");
 
       const host=hostRef.current;
@@ -1145,7 +1150,9 @@ function Step3DViewer({stepUrl,fileName,compact}){
       const scene=new THREE.Scene();
       scene.background=new THREE.Color(0xf7faf8);
       const group=new THREE.Group();
+      let triCount=0;
       for(const mesh of result.meshes){
+        triCount+=Math.floor((mesh.index?.array?.length||mesh.attributes.position.array.length/3)/3);
         const geo=new THREE.BufferGeometry();
         geo.setAttribute("position",new THREE.Float32BufferAttribute(mesh.attributes.position.array,3));
         if(mesh.attributes.normal)geo.setAttribute("normal",new THREE.Float32BufferAttribute(mesh.attributes.normal.array,3));
@@ -1161,15 +1168,7 @@ function Step3DViewer({stepUrl,fileName,compact}){
       const size=box.getSize(new THREE.Vector3()).length()||10;
       group.position.sub(center);
       scene.add(group);
-      // 光照：three r155 起默认物理光照单位，旧的 ambient 0.75 + 单向平行光在新单位下
-      // 明显偏暗，且背面只有环境光 —— 线上反馈"背面的管脚都看不清"。
-      // 改为半球光打底（上下异色模拟天空/地面反射）+ 主光 + 背面补光，三面受光。
-      scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f98, 1.6));
-      scene.add(new THREE.AmbientLight(0xffffff, .5));
-      const dir=new THREE.DirectionalLight(0xffffff, 2.2);dir.position.set(1,1.4,1);scene.add(dir);
-      const fill=new THREE.DirectionalLight(0xffffff, 1.2);fill.position.set(-1,.6,-1);scene.add(fill);
-      const camera=new THREE.PerspectiveCamera(45,width/height,size/500,size*20);
-      camera.position.set(size*.7,size*.6,size*.9);
+      // renderer 必须先于环境贴图创建（PMREMGenerator 依赖它）
       const renderer=createRenderer(THREE);
       renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
       renderer.setSize(width,height);
@@ -1178,6 +1177,24 @@ function Step3DViewer({stepUrl,fileName,compact}){
       // 用 ResizeObserver 按真实容器宽重设缓冲。
       renderer.domElement.style.display="block";
       host.appendChild(renderer.domElement);
+      // 光照分两层：
+      // ① 环境贴图（IBL）—— KiCad 3D 查看器质感的来源。PBR 材质没有环境反射时
+      //    金属/半光泽面又平又暗；RoomEnvironment 生成室内环境后引脚金属质感立现。
+      // ② 直射光 —— three r155 起物理光照单位，旧强度偏暗，补主光与背面补光。
+      let envOk=false, pmrem=null;
+      if(envMod?.RoomEnvironment){
+        try{
+          pmrem=new THREE.PMREMGenerator(renderer);
+          scene.environment=pmrem.fromScene(new envMod.RoomEnvironment(),0.04).texture;
+          envOk=true;
+        }catch(e){console.warn("[3D] 环境贴图生成失败，回退直射光:",e.message)}
+      }
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f98, envOk?0.9:1.6));
+      const dir=new THREE.DirectionalLight(0xffffff, envOk?1.6:2.2);dir.position.set(1,1.4,1);scene.add(dir);
+      const fill=new THREE.DirectionalLight(0xffffff, envOk?0.8:1.2);fill.position.set(-1,.6,-1);scene.add(fill);
+      if(!envOk)scene.add(new THREE.AmbientLight(0xffffff, .5));
+      const camera=new THREE.PerspectiveCamera(45,width/height,size/500,size*20);
+      camera.position.set(size*.7,size*.6,size*.9);
       const onCtxLost=ev=>{ev.preventDefault();setPhase("error");
         setMsg("WebGL 上下文丢失（通常是同时打开的 3D 视图过多或显卡驱动重置），可点重试")};
       renderer.domElement.addEventListener("webglcontextlost",onCtxLost);
@@ -1199,9 +1216,10 @@ function Step3DViewer({stepUrl,fileName,compact}){
         controls.dispose();
         // dispose() 只释放 GPU 资源，不归还 context；不 forceContextLoss 的话
         // 反复开关几次就会耗尽浏览器的 context 名额，之后一律「Error creating WebGL context」
+        try{pmrem?.dispose()}catch{}
         try{renderer.forceContextLoss()}catch{}
         renderer.dispose();host.innerHTML="";};
-      setMeshCount(result.meshes.length);setPhase("ready");
+      setMeshCount(result.meshes.length);setStats3d({tri:triCount,parseMs,env:envOk});setPhase("ready");
     }catch(e){
       setPhase("error");
       setMsg(e instanceof Error?e.message:String(e));
@@ -1227,7 +1245,8 @@ function Step3DViewer({stepUrl,fileName,compact}){
     {phase==="error"&&<div style={{padding:"12px 14px",borderRadius:8,background:"#fdeaea",border:"1px solid #f5c6c6",color:"#a0302a",fontSize:12}}>
       3D 预览失败：{msg}。可下载 STEP 源文件用 KiCad / FreeCAD 打开。</div>}
     {phase==="ready"&&<div style={{fontSize:11,color:C.textMute,marginBottom:6}}>
-      已渲染 {meshCount} 个网格 · 左键旋转 / 滚轮缩放 / 右键平移</div>}
+      已渲染 {meshCount} 网格 · {(stats3d?.tri??0).toLocaleString()} 三角形 · 解析 {stats3d?.parseMs??0}ms
+      {stats3d&&!stats3d.env&&" · 环境贴图未加载(质感降级)"} · v{APP_VERSION} · 左键旋转 / 滚轮缩放</div>}
     <div ref={hostRef} style={{borderRadius:8,overflow:"hidden",
       border:phase==="ready"?`1px solid ${C.borderLight}`:"none"}}/>
   </div>);
@@ -2523,6 +2542,16 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
 // ═══ 主应用 ═══
 function App(){
   const[page,setPage]=useState("home");
+  // 版本自检：这是第二次出现"后端已部署新版、页面还跑旧 bundle"（SPA 标签页
+  // 一直开着不会重新拉 index.html）。后端行为变了、前端行为没变，极难自行察觉。
+  // 挂载时对比 /api/health 的版本，落后即提示刷新。
+  const[staleVer,setStaleVer]=useState(null);
+  useEffect(()=>{
+    fetch("/api/health").then(r=>r.json()).then(d=>{
+      const server=String(d?.service||"").match(/v([\d.]+)/)?.[1];
+      if(server&&server!==APP_VERSION)setStaleVer(server);
+    }).catch(()=>{});
+  },[]);
   const[original,setOriginal]=useState(null);
   const[busy,setBusy]=useState(false);
   const[demoNote,setDemoNote]=useState("");
@@ -2583,6 +2612,10 @@ function App(){
   };
 
   return(<React.Fragment>
+    {staleVer&&<div style={{background:"#fff8e6",borderBottom:"1px solid #f0dca0",padding:"8px 24px",fontSize:12,color:"#854f0b",display:"flex",alignItems:"center",gap:10,justifyContent:"center"}}>
+      ⚠ 页面版本 v{APP_VERSION} 落后于服务端 v{staleVer}，部分修复未生效
+      <button onClick={()=>location.reload(true)} style={{padding:"3px 12px",borderRadius:6,border:"1px solid #f0dca0",background:"#fff",color:"#854f0b",fontSize:12,fontWeight:600,cursor:"pointer"}}>刷新页面</button>
+    </div>}
     <header style={{background:"#fff",borderBottom:`1px solid ${C.border}`,padding:"12px 24px"}}>
       <div style={{maxWidth:1400,margin:"0 auto",display:"flex",alignItems:"center",gap:10}}>
         <div style={{width:38,height:38,borderRadius:9,background:C.green,display:"flex",alignItems:"center",justifyContent:"center"}}>

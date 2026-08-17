@@ -38,7 +38,7 @@ try {
   const GLOBALS = new Set(["window","document","console","fetch","setTimeout","clearTimeout","setInterval","clearInterval",
     "Math","JSON","Object","Array","String","Number","Boolean","Date","Promise","Map","Set","RegExp","Error","isFinite","isNaN",
     "parseInt","parseFloat","encodeURIComponent","decodeURIComponent","URL","URLSearchParams","Blob","FileReader",
-    "AbortController","AbortSignal","ResizeObserver","requestAnimationFrame","cancelAnimationFrame","devicePixelRatio","location","navigator",
+    "AbortController","AbortSignal","ResizeObserver","performance","requestAnimationFrame","cancelAnimationFrame","devicePixelRatio","location","navigator",
     "alert","Intl","Uint8Array","Float32Array","TextDecoder","CSS","React","ReactDOM","module","exports","require",
     "globalThis","undefined","NaN","Infinity","Function","Symbol"]);
   const undef = new Map();

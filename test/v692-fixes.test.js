@@ -231,8 +231,13 @@ test("库文件与资源链接走同源代理", async t => {
 
 // ─────────────────────────────────────────────────────────────
 test("界面清理：版本号与应用领域", async t => {
-  await t.test("页头页脚不再显示版本号", () => {
-    assert.doesNotMatch(SRC, /v\{APP_VERSION\}/);
+  await t.test("页头页脚不再显示版本号（诊断行/落后提示除外）", () => {
+    // 用户要求去掉的是页头标题旁与页脚的装饰性版本号；
+    // 3D 诊断行与"页面落后于服务端"横幅里的版本号是功能信息，允许保留。
+    const header = SRC.match(/<header[\s\S]*?<\/header>/)?.[0] || "";
+    const footer = SRC.match(/<footer[\s\S]*?<\/footer>/)?.[0] || "";
+    assert.doesNotMatch(header, /v\{APP_VERSION\}/);
+    assert.doesNotMatch(footer, /v\{APP_VERSION\}/);
     // 仍保留不可见属性供部署核对
     assert.match(SRC, /data-app-version=\{APP_VERSION\}/);
   });
