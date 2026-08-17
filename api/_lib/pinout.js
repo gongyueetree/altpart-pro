@@ -60,7 +60,8 @@ type 取值：input / output / bidirectional / power / passive / no_connect
 ${pinCount ? `编号引脚必须恰好 ${pinCount} 项，编号 1..${pinCount}。
 若该封装另有散热焊盘，额外追加一项，name 用 "EP"，number 用 "EP" 或 ${pinCount + 1}。` : ""}`;
 
-  const reject = r => { cache.set(ck, false, 3600); return { pins: [], rejected: r }; };
+  // 负缓存 600s：AI 输出有随机性，被拒后长缓存会让"重试"按钮在 1 小时内形同虚设
+  const reject = r => { cache.set(ck, false, 600); return { pins: [], rejected: r }; };
 
   // 两段式调用。
   // 第一段（联网检索）：引脚名是强事实性内容，先检索 datasheet 原文最能压幻觉。
@@ -117,19 +118,33 @@ ${pinCount ? `编号引脚必须恰好 ${pinCount} 项，编号 1..${pinCount}�
     return reject(REJECT.DUP_NAMES);
   }
 
-  // 引脚数校验：EP / 散热焊盘不占常规编号，必须排除在外再比。
-  // 旧代码提示词里写着"含 EP 时可略多"，校验却要求严格相等 —— 自相矛盾，
-  // 导致带散热焊盘的封装（QFN/SOIC-EP/TSSOP-EP 等）100% 被拒，用户侧表现为"AI 推断不出引脚名"。
-  const epPins = pins.filter(isEpPin);
-  const numbered = pins.filter(p => !isEpPin(p));
-  if (pinCount && numbered.length !== pinCount) {
-    console.warn(`[pinout] ${partNumber}: AI 返回 ${numbered.length} 个编号引脚(另有 ${epPins.length} 个 EP)，封装标称 ${pinCount} 个，拒绝采用`);
-    return reject({ ...REJECT.COUNT_MISMATCH, detail: `AI 给出 ${numbered.length} 个，封装标称 ${pinCount} 个` });
+  // 引脚数校验 —— 以**编号覆盖**为准，不以名字为准。
+  // v6.9.2 的规则只看名字：AI 把编号在 1..pinCount 内的某脚命名为 "EP" 时，
+  // 该脚被踢出计数 → 19≠20 → 整份误拒（线上 AD8331ARQZ 正是如此）。
+  // 正确语义：编号落在封装范围内的脚，无论叫什么，都占一个编号位、必须计数；
+  // 只有编号超出范围或编号本身是 "EP"/"PAD" 的附加焊盘才不占位。
+  const numbered = [], epExtras = [], strays = [];
+  for (const p of pins) {
+    const n = parseInt(p.number, 10);
+    if (Number.isInteger(n) && n >= 1 && (!pinCount || n <= pinCount)) numbered.push({ ...p, _n: n });
+    else if (isEpPin(p)) epExtras.push(p);
+    else strays.push(p);
   }
+  if (pinCount) {
+    // 去重已保证编号唯一，size 即覆盖数；比"总数相等"更严：1..pinCount 必须齐全
+    const covered = new Set(numbered.map(p => p._n)).size;
+    if (covered !== pinCount) {
+      console.warn(`[pinout] ${partNumber}: 编号覆盖 ${covered}/${pinCount}（另有 ${epExtras.length} 个附加焊盘、${strays.length} 个异常编号），拒绝采用`);
+      return reject({ ...REJECT.COUNT_MISMATCH, detail: `编号引脚覆盖 ${covered}/${pinCount}` });
+    }
+  }
+  // 编号内被命名为 EP 的脚（如 QFN 的 pad 常记作第 N+1 脚以外的形态）计入提示
+  const epNamed = numbered.filter(isEpPin);
 
   let warning = "";
   if (ncCount > 0) warning = `含 ${ncCount} 个 NC 引脚，请与 datasheet 核对是否确为空脚`;
-  if (epPins.length) warning = (warning ? warning + "；" : "") + `含 ${epPins.length} 个散热焊盘(EP)，需确认是否接地`;
+  if (epExtras.length + epNamed.length) warning = (warning ? warning + "；" : "") + `含 ${epExtras.length + epNamed.length} 个散热焊盘(EP)，需确认是否接地`;
+  if (strays.length) warning = (warning ? warning + "；" : "") + `含 ${strays.length} 个编号异常引脚（已保留，请核对）`;
 
   const result = {
     pins,

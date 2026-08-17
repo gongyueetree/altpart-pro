@@ -189,10 +189,12 @@ test("AI 引脚：EP 焊盘不计入编号引脚数", async t => {
     for (const n of ["VCC", "GND", "OUT", "IN+", "GAIN", "MODE"])
       assert.equal(isEpPin({ name: n, number: "1" }), false, `${n} 不应判为 EP`);
   });
-  await t.test("引脚数校验排除 EP 后再比较", () => {
+  await t.test("引脚数校验以编号覆盖为准（v6.9.9 起），不再按名字剔除", () => {
     const src = fs.readFileSync(path.resolve(__dirname, "..", "api/_lib/pinout.js"), "utf8");
-    assert.match(src, /const numbered = pins\.filter\(p => !isEpPin\(p\)\)/);
-    assert.match(src, /numbered\.length !== pinCount/);
+    // 旧规则只看名字：编号 1..N 内被命名为 "EP" 的脚被剔除 → 整份误拒（AD8331ARQZ）
+    assert.match(src, /covered !== pinCount/);
+    assert.match(src, /new Set\(numbered\.map\(p => p\._n\)\)\.size/);
+    assert.doesNotMatch(src, /numbered\.length !== pinCount/);
   });
   await t.test("引脚查询含联网检索（v6.9.5 起两段式：8192 检索 + 记忆兜底）", () => {
     const src = fs.readFileSync(path.resolve(__dirname, "..", "api/_lib/pinout.js"), "utf8");
