@@ -28,7 +28,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <script type="text/babel">
 const{useState,useEffect,useRef}=React;
 
-const APP_VERSION="6.9.0";
+const APP_VERSION="6.9.2";
 
 const C={
   green:"#1a6c4e",greenLight:"#e8f5ef",greenMid:"#c2e5d3",greenAccent:"#2d9d6f",
@@ -64,6 +64,8 @@ const APP_PRIORITY={
   medical:["噪声","noise","漏电流","leakage","工作温度","失调"],
   education:["参考价格","price","封装"],
 };
+// 以下三项在应用领域筛选移除后仅由导出元信息使用；
+// 后端仍保留 application 维度（供 ezPLM 走 API 调用），故不删除定义。
 const APP_HARD={
   battery:["静态电流","工作电压"], industrial:["工作温度"], automotive:["工作温度"],
   precision:["噪声","失调"], rf:["带宽"],
@@ -263,7 +265,17 @@ function normPin(v){
 }
 const samePin=(a,b)=>{const x=normPin(a),y=normPin(b);return !!x&&x===y;};
 
+// ezPLM 的文件 URL（七牛云私有空间）带时效签名且需要鉴权，
+// 浏览器直连会拿到 nginx 的 401 Authorization Required；必须经同源代理取。
+// 但 datasheet 也可能落在厂商官网/分销商域名上，那些直连才对，代过去反而被代理的
+// 主机白名单挡成 403 —— 所以按主机判断，与后端 ezplm-resource 的白名单保持一致。
+const PROXY_HOSTS=[/(^|\.)ezplm\.com$/i,/(^|\.)ezplm\.cn$/i,/^raw\.githubusercontent\.com$/i];
+function needsProxy(u){
+  try{return PROXY_HOSTS.some(re=>re.test(new URL(u).hostname))}catch{return false}
+}
 const proxyRes=u=>(!u||typeof u!=="string")?"":(/^https?:\/\//i.test(u)?`/api/ezplm-resource?url=${encodeURIComponent(u)}`:u);
+/** 供用户点击的资源链接：ezPLM 资源走代理，站外链接保持直连 */
+const resHref=u=>(!u||typeof u!=="string")?"":(needsProxy(u)?proxyRes(u):u);
 
 // ── S-expression 块提取（容错强于完整解析器，适合 kicad_mod）──
 function sexprBlocks(txt,keyword){
@@ -1009,6 +1021,39 @@ const OCCT_CDN="https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-imp
 const THREE_CDN="https://esm.sh/three@0.185.0";
 const ORBIT_CDN="https://esm.sh/three@0.185.0/examples/jsm/controls/OrbitControls.js";
 
+// ── WebGL 预检与容错 ──────────────────────────────────────────
+// 线上报「THREE.WebGLRenderer: Error creating WebGL context」有三类成因，
+// 之前一律吐同一句话，用户无从下手：
+//   ① 浏览器/系统禁用了硬件加速，或显卡在黑名单里 → 根本拿不到 context
+//   ② 同一页反复开关 3D，旧 context 未真正释放，撞上浏览器 ~16 个的上限
+//   ③ antialias/高 pixelRatio 在集显或低配机上申请失败
+// 对应做三件事：预检给出可操作提示、dispose 时 forceContextLoss 真正归还、
+// 创建失败逐级降级重试。
+function probeWebGL(){
+  try{
+    const c=document.createElement("canvas");
+    const gl=c.getContext("webgl2")||c.getContext("webgl")||c.getContext("experimental-webgl");
+    if(!gl)return{ok:false,reason:"no_context"};
+    // 用完立刻归还，避免预检本身占掉一个 context 名额
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    return{ok:true};
+  }catch(e){return{ok:false,reason:"exception",message:e?.message||String(e)}}
+}
+
+/** 逐级降级创建 renderer：高画质 → 关抗锯齿 → 最低要求 */
+function createRenderer(THREE){
+  const tries=[
+    {antialias:true,alpha:true},
+    {antialias:false,alpha:true},
+    {antialias:false,alpha:false,powerPreference:"low-power",failIfMajorPerformanceCaveat:false},
+  ];
+  let last=null;
+  for(const opts of tries){
+    try{return new THREE.WebGLRenderer(opts)}catch(e){last=e}
+  }
+  throw new Error("浏览器无法创建 WebGL 上下文"+(last?.message?`（${last.message}）`:""));
+}
+
 function loadScriptOnce(src){
   return new Promise((res,rej)=>{
     const done=[...document.scripts].some(x=>x.src&&x.src.indexOf(src)>=0);
@@ -1048,7 +1093,19 @@ function Step3DViewer({stepUrl,fileName,compact}){
   useEffect(()=>()=>disposeRef.current?.(),[]);
 
   async function load(){
+    const probe=probeWebGL();
+    if(!probe.ok){
+      // 先于 7.6MB 内核下载拦截，避免白等一分钟再报错
+      setPhase("error");
+      setMsg("此浏览器当前不可用 WebGL。常见原因：浏览器设置里关闭了「使用硬件加速」，"
+        +"或系统显卡驱动被浏览器列入黑名单。可在浏览器设置中开启硬件加速后重试，"
+        +"或访问 chrome://gpu 查看具体原因");
+      return;
+    }
     setPhase("loading");setMsg("正在加载 3D 内核与 STEP 模型…");
+    // 重试时先释放上一次的 context，否则每点一次「重试加载」就多占一个名额
+    try{disposeRef.current?.()}catch{}
+    disposeRef.current=null;
     try{
       // ⚠ Babel standalone 会把静态写法的 import() 转译成 require()（浏览器无此函数）。
       // 用 new Function 构造，使动态 import 在运行时才出现，绕过编译期转换。
@@ -1096,10 +1153,13 @@ function Step3DViewer({stepUrl,fileName,compact}){
       const dir=new THREE.DirectionalLight(0xffffff,1.1);dir.position.set(1,1.4,1);scene.add(dir);
       const camera=new THREE.PerspectiveCamera(45,width/height,size/500,size*20);
       camera.position.set(size*.7,size*.6,size*.9);
-      const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+      const renderer=createRenderer(THREE);
       renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
       renderer.setSize(width,height);
       host.appendChild(renderer.domElement);
+      const onCtxLost=ev=>{ev.preventDefault();setPhase("error");
+        setMsg("WebGL 上下文丢失（通常是同时打开的 3D 视图过多或显卡驱动重置），可点重试")};
+      renderer.domElement.addEventListener("webglcontextlost",onCtxLost);
       const controls=new OrbitControls(camera,renderer.domElement);
       controls.enableDamping=true;
       let raf=0;
@@ -1108,7 +1168,12 @@ function Step3DViewer({stepUrl,fileName,compact}){
       const onResize=()=>{const w=host.clientWidth||width;camera.aspect=w/height;camera.updateProjectionMatrix();renderer.setSize(w,height)};
       window.addEventListener("resize",onResize);
       disposeRef.current=()=>{cancelAnimationFrame(raf);window.removeEventListener("resize",onResize);
-        controls.dispose();renderer.dispose();host.innerHTML="";};
+        renderer.domElement.removeEventListener("webglcontextlost",onCtxLost);
+        controls.dispose();
+        // dispose() 只释放 GPU 资源，不归还 context；不 forceContextLoss 的话
+        // 反复开关几次就会耗尽浏览器的 context 名额，之后一律「Error creating WebGL context」
+        try{renderer.forceContextLoss()}catch{}
+        renderer.dispose();host.innerHTML="";};
       setMeshCount(result.meshes.length);setPhase("ready");
     }catch(e){
       setPhase("error");
@@ -1293,7 +1358,9 @@ function GraphicsPanel({d,pn}){
           return;
         }
       }
-      setPdfWarn("AI 未能给出可信的引脚定义（引脚数不符或自评不确定），已保持仅编号符号");
+      setPdfWarn(e?.aiPinoutRejected?.message
+        ? `AI 引脚推断未采用：${e.aiPinoutRejected.message}${e.aiPinoutRejected.detail?`（${e.aiPinoutRejected.detail}）`:""}。已保持仅编号符号`
+        : "AI 未能给出可信的引脚定义（引脚数不符或自评不确定），已保持仅编号符号");
       setAiTry(true);
     }catch(err){setPdfWarn("AI 引脚推断失败");}
     setAiBusy(false);
@@ -1920,10 +1987,10 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
   const[mfrs,setMfrs]=useState([]);
   const[mfrInput,setMfrInput]=useState("");
   const[mode,setMode]=useState("funcCompat");
-  const[application,setApplication]=useState("generic");
+  const application="generic";   // 应用领域筛选已移除；后端仍保留该维度供 ezPLM 走 API 调用
   const[showVariants,setShowVariants]=useState(false);
-  const[orderSource,setOrderSource]=useState("default");
-  const[procurement,setProcurement]=useState({region:"CN",quantity:100,packaging:"any",currency:"USD",inStockOnly:true});   // default | scenario | user_override
+  const[orderSource,setOrderSource]=useState("default");   // default | user_override
+  const[procurement,setProcurement]=useState({region:"CN",quantity:100,packaging:"any",currency:"USD",inStockOnly:true});
   const[reorderNote,setReorderNote]=useState("");
   const[phase,setPhase]=useState("idle"); // idle|loading|done
   const[result,setResult]=useState(null);
@@ -1945,7 +2012,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
     const next=[...params];const[m]=next.splice(from,1);next.splice(i,0,m);
     setParams(next);setDragging(null);dragFrom.current=null;
     setOrderSource("user_override");
-    setReorderNote("已按你手动调整的顺序提交；场景切换不会覆盖它");
+    setReorderNote("优先级已调整，点「重新推荐」按新顺序重新检索候选");
   };
   const setCon=(pid,c)=>setConstraints(prev=>{const n={...prev};if(c)n[pid]=c;else delete n[pid];return n;});
   const addMfr=()=>{
@@ -1969,6 +2036,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
 
   const ERR_TEXT={
     NO_VERIFIED_CANDIDATES:"没有找到满足当前模式与约束的已验证候选",
+    NO_CANDIDATE_DATA:"候选型号均查不到参数数据，无法比较",
     PIN_EVIDENCE_MISSING:"该模式需要引脚映射证据，当前候选均无法验证引脚",
     PART_UNVERIFIED:"原型号未经权威来源验证，无法推荐",
     VARIANT_NOT_RESOLVED:"未能确定具体订货型号，请先选择封装变体",
@@ -2018,8 +2086,15 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
       }
       if(e&&typeof e==="object"){
         const n=e.details?.eliminatedCount;
-        setNote(`${ERR_TEXT[e.code]||e.message||"推荐失败"}`+
+        // ERR_TEXT 只是分类文案；后端 message 与 hint 才说明具体原因，
+        // 之前 `ERR_TEXT[code]||message` 把 message 整个吞掉，
+        // 线上表现就是一句无信息的"服务内部错误 · 可重试"
+        const label=ERR_TEXT[e.code]||"推荐失败";
+        const detail=e.message&&e.message!==label?`：${e.message}`:"";
+        const hint=e.details?.hint?` 建议：${e.details.hint}`:"";
+        setNote(`${label}${detail}`+
           `${typeof n==="number"?`（已排除 ${n} 个候选，见下方淘汰列表）`:""}`+
+          `${hint}`+
           `${e.retryable?" · 可重试":""} · ${e.code||""} · ${e.requestId||""}`);
         // 有淘汰明细时必须进入 done 阶段，否则结果区（含淘汰列表）整块不渲染，
         // 用户只看到"见下方淘汰列表"而下方空白
@@ -2192,10 +2267,10 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
         <div style={{marginTop:12,paddingTop:12,borderTop:`1px dashed ${C.borderLight}`}}>
           <div style={{fontSize:12,fontWeight:600,color:C.textSec,marginBottom:8}}>📦 库文件与资源</div>
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-            {original.datasheetUrl&&<a href={original.datasheetUrl} target="_blank" rel="noreferrer" style={RES_BTN}>📄 Datasheet</a>}
-            {original.footprintFileUrl&&<a href={original.footprintFileUrl} target="_blank" rel="noreferrer" style={RES_BTN} title={original.footprintFileName}>📐 KiCad封装</a>}
-            {original.model3dUrl&&<a href={original.model3dUrl} target="_blank" rel="noreferrer" style={RES_BTN} title={original.model3dFileName}>🧊 3D模型(STEP)</a>}
-            {original.symbolUrl&&<a href={original.symbolUrl} target="_blank" rel="noreferrer" style={RES_BTN}>🔣 原理图符号</a>}
+            {original.datasheetUrl&&<a href={resHref(original.datasheetUrl)} target="_blank" rel="noreferrer" style={RES_BTN}>📄 Datasheet</a>}
+            {original.footprintFileUrl&&<a href={resHref(original.footprintFileUrl)} target="_blank" rel="noreferrer" style={RES_BTN} title={original.footprintFileName}>📐 KiCad封装</a>}
+            {original.model3dUrl&&<a href={resHref(original.model3dUrl)} target="_blank" rel="noreferrer" style={RES_BTN} title={original.model3dFileName}>🧊 3D模型(STEP)</a>}
+            {original.symbolUrl&&<a href={resHref(original.symbolUrl)} target="_blank" rel="noreferrer" style={RES_BTN}>🔣 原理图符号</a>}
             {original.productUrl&&<a href={original.productUrl} target="_blank" rel="noreferrer" style={RES_BTN}>🔗 官网产品页</a>}
           </div>
           <button onClick={()=>onShowSelf&&onShowSelf()}
@@ -2255,46 +2330,8 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
         </div>
         {params.map((p,i)=>(<ParamRow key={p.id} p={p} index={i} con={constraints[p.id]} onSetCon={setCon}
           onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop} dragging={dragging}/>))}
-      </div>
-
-      <div style={{borderRadius:12,border:`1.5px solid ${C.border}`,background:"#fff",padding:"14px 16px",marginBottom:14}}>
-        <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>🎯 应用领域</div>
-        <div style={{fontSize:11,color:C.textMute,marginBottom:10}}>不同应用下最优替代料不同，将调整参数权重与硬约束</div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
-          {APPLICATIONS.map(a=>(<button key={a.code} aria-pressed={application===a.code} onClick={()=>{
-              setApplication(a.code);
-              if(orderSource==="user_override"){
-                setReorderNote("已保留你手动调整的顺序；如需应用场景排序请点「恢复场景默认排序」");
-                return;
-              }
-              const next=reorderByApplication(params,a.code);
-              const changed=next.some((p,i)=>p.id!==params[i]?.id);
-              if(changed){
-                setParams(next);setOrderSource("scenario");
-                const moved=next[0]?.name;
-                const hard=(APP_HARD[a.code]||[]).filter(h=>next.some(p=>`${p.name}`.includes(h)));
-                setReorderNote(`已重排：「${moved}」提升至第 1 位` + (hard.length?`；建议将 ${hard.join("、")} 设为硬约束`:""));
-              }else{
-                setOrderSource(a.code==="generic"?"default":"scenario");
-                setReorderNote("该场景下参数顺序与当前一致，未做调整");
-              }
-            }} title={a.desc}
-            style={{padding:"8px 6px",borderRadius:8,borderWidth:1.5,borderStyle:"solid",
-              borderColor:application===a.code?C.green:C.border,
-              background:application===a.code?C.greenLight:"#fff",cursor:"pointer",textAlign:"center"}}>
-            <div style={{fontSize:17}}>{a.icon}</div>
-            <div style={{fontSize:11,fontWeight:600,color:C.text,marginTop:2}}>{a.label}</div>
-          </button>))}
-        </div>
         {reorderNote&&<div style={{marginTop:8,fontSize:11,color:C.indigo,background:C.indigoBg,border:`1px solid ${C.indigoBorder}`,borderRadius:6,padding:"6px 8px"}}>
-          💡 {reorderNote}
-          {orderSource==="user_override"&&<button onClick={()=>{
-              const next=reorderByApplication(params,application);
-              setParams(next);setOrderSource("scenario");
-              setReorderNote(`已恢复「${APPLICATIONS.find(a=>a.code===application)?.label}」默认排序`);
-            }} style={{marginLeft:8,padding:"2px 8px",borderRadius:4,border:`1px solid ${C.indigoBorder}`,background:"#fff",color:C.indigo,fontSize:10,cursor:"pointer"}}>
-            恢复场景默认排序</button>}
-        </div>}
+          💡 {reorderNote}</div>}
       </div>
 
       {mode==="lowCost"&&(
@@ -2525,7 +2562,7 @@ function App(){
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="#fff" strokeWidth="1.8" fill="none"/><path d="M12 7v10M7 9.5l5 3 5-3" stroke="#fff" strokeWidth="1.5" strokeLinecap="round"/></svg>
         </div>
         <div style={{flex:1}}>
-          <div data-app-version={APP_VERSION} style={{fontSize:17,fontWeight:700,color:C.text}}>AltPart Pro <span style={{fontSize:10,fontWeight:400,color:C.textMute}}>v{APP_VERSION}</span></div>
+          <div data-app-version={APP_VERSION} style={{fontSize:17,fontWeight:700,color:C.text}}>AltPart Pro</div>
           <div style={{fontSize:11,color:C.textMute}}>元器件替代决策智能体 · ezPLM集成</div>
         </div>
         {page==="workbench"&&<button onClick={()=>setPage("home")} style={{padding:"8px 16px",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.textSec,fontSize:13,cursor:"pointer"}}>← 重新搜索</button>}
@@ -2545,8 +2582,8 @@ function App(){
         onBack={()=>setPage("home")}/>}
       {page==="workbench"&&original&&<Workbench key={original.partNumber} original={original} demoNote={demoNote} onBack={()=>setPage("home")} onSwitchVariant={v=>analyze(v.pn)}/>}
     </main>
-    <footer style={{textAlign:"center",padding:"14px",borderTop:`1px solid ${C.borderLight}`,fontSize:12,color:C.textMute,background:"#fff"}}>
-      AltPart Pro v{APP_VERSION} · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
+    <footer data-app-version={APP_VERSION} style={{textAlign:"center",padding:"14px",borderTop:`1px solid ${C.borderLight}`,fontSize:12,color:C.textMute,background:"#fff"}}>
+      AltPart Pro · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
     </footer>
   </React.Fragment>);
 }

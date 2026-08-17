@@ -487,3 +487,63 @@ XLSEMI（芯龙）、CET（长电）都是中国厂商。原因是那份 40 条�
 所有比较运算在 JSX 外完成。
 
 测试：491 → **528 例，全部通过**。
+
+## v6.9.1 — 上线前安全与依赖修复
+
+### ① pdfjs-dist 高危漏洞（GHSA-hq66-cqwq-w95j）
+`npm audit` 报 high：`pdfjs-dist >=5.6.83 <6.2.108` 存在「打开恶意 PDF 可执行任意
+JavaScript」。本项目的 `_lib/pdf-pins.js` 会**下载第三方 datasheet URL 并在服务端解析**，
+正是该漏洞的攻击面（虽已设 `isEvalSupported:false`，但不能替代升级）。
+
+修复：`pdfjs-dist ^5.4.296 → ^6.2.108`，`npm audit` 归零。
+`pdfjs-dist/legacy/build/pdf.mjs` 入口与 `getDocument` 调用签名在 v6 保持兼容，已实测验证。
+
+### ② PDF 文本抽取缺字体与 CMap 资源
+升级过程中发现既有告警：
+`UnknownErrorException: Ensure that the standardFontDataUrl API parameter is provided.`
+
+未提供 `standardFontDataUrl` 时，Type1 标准字体（Helvetica/Times 等，datasheet 主力字体）
+会退化；未提供 `cMapUrl` 时**中文数据手册的 CJK 编码直接抽不出字**。
+两者都会让引脚提取静默少读，且不报错 —— 属于 silent-wrong。
+
+修复：
+- `getPdfAssets()` 运行时解析 `pdfjs-dist/standard_fonts` 与 `cmaps`，目录不存在则不传参（不报错）
+- `vercel.json` 为 `api/v2/ecad.js` 增加 `includeFiles`，确保这两个目录被打进函数
+  （路径是运行时拼的字符串，Vercel 的文件追踪不会自动带上）
+- 该函数内存 512MB → 1024MB（PDF 解析是本项目内存峰值所在）
+
+### ③ CORS 任意来源
+`Access-Control-Allow-Origin: *` 写死。公网部署后任意站点都能直接调用本后端，
+借用服务端持有的 Gemini / ezPLM / DigiKey 密钥额度。
+
+修复：新增 `ALLOWED_ORIGINS` 环境变量（逗号分隔）。
+**未配置时仍为 `*`，既有 ezPLM iframe 接入不受影响**；配置后只回显白名单内的 Origin，
+未命中不回显请求方 Origin，并补 `Vary: Origin` 避免 CDN 串缓存。
+
+测试：528 → **539 例，全部通过**（`test/v691-fixes.test.js` 11 例）。
+
+### 仍未处理
+本轮只做上线阻塞项，未动 v6.9.0 遗留的功能性 backlog（鉴权/限流、缓存持久化、
+Golden Set、Playwright E2E、前端模块化）。
+
+## v6.9.2 — 线上反馈 8 项
+
+| # | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | 页头/页脚版本号 | — | 移除显示，保留不可见 `data-app-version` 供部署核对 |
+| 2 | 3D 报 `Error creating WebGL context` | `renderer.dispose()` 只释放 GPU 资源、**不归还 context**，浏览器上限约 16 个，反复开关即耗尽 | dispose 时 `forceContextLoss()`；加载前预检 WebGL 并给出可操作提示；创建失败逐级降级；监听 `webglcontextlost` |
+| 3 | AI 推断管脚无引脚名 | 提示词写"含 EP 可略多"、校验却要求引脚数**严格相等** —— 自相矛盾，带散热焊盘的封装(QFN/SOIC-EP…)100% 被拒 | EP/PAD/TAB 排除出编号计数；开启 grounding（引脚名是强事实性内容，靠模型记忆最易整份编造）；被拒原因结构化回传前端 |
+| 4 | 库文件资源链接 401 | 左栏「库文件与资源」的 `href` 直连 ezPLM 原始 URL（七牛私有空间签名链接），未走 `/api/ezplm-resource` —— 全站唯一漏改处 | 四个资源链接改走代理（官网产品页保持直连）；代理白名单改 ezPLM 域后缀匹配；浏览器直接点开时返回中文错误页而非裸 JSON |
+| 5 | 推荐结果重复 | 去重只发生在 **AI 吐出型号字符串时**，只挡字面重复；`LM358`/`LM358DR`/`lm358-dr` 查询后解析到同一订货号，各持半份参数 | 新增 `_lib/candidate-merge.js`：查询后按「归一化 MPN + canonical 厂商」二次去重，按 **ezPLM > DigiKey/Mouser > AI** 逐参数合并，冲突记录不丢弃 |
+| 6 | 去掉应用领域筛选 | — | UI 移除；`application` 降为常量；后端维度保留供 ezPLM 走 API 调用 |
+| 7 | 国产替代 `INTERNAL_ERROR` | 候选全部查不到参数时抛**裸 Error** → 归入 INTERNAL_ERROR「服务内部错误·可重试」。国产模式最易命中：AI 给的国产型号 ezPLM 未收录、DigiKey/Mouser 不经销 | 新增业务码 `NO_CANDIDATE_DATA`（200/不可重试）+ 候选清单 + 针对国产模式的处置建议；前端不再用 `ERR_TEXT[code]||message` 吞掉后端 message |
+| 8 | 调优先级后「重新推荐」无变化 | 两处叠加：① `getCandidates` 拿到的是 `original.parameters` 的**原始顺序**，只取前 6 个当关键参数 → 优先级从未到达 AI；② 候选缓存键 `cand10:型号:模式:场景:应用` **不含优先级与优选厂商** → 24h 内必命中旧候选 | 按优先级重排后再交给 AI，并在提示词中显式声明「第一优先项不得劣于原型号」；缓存键补入 `prio` 与 `mfrKey` |
+
+第 7 项已用 stub 复现确认（`domestic` + ezPLM 未收录 + 分销商无货 → 旧代码必抛 INTERNAL_ERROR）。
+
+测试：539 → **575 例，全部通过**（`test/v692-fixes.test.js` 36 例）。
+
+### 未处理
+- 第 5 项只做了**同一 MPN** 的合并；不同订货号但同芯片（如 `XX-T` 与 `XX-TR`）仍各占一位，需接 `variantKinship` 做系列级收敛
+- 第 3 项 grounding 开启后引脚准确率需真实环境验证，沙箱无密钥
+- 第 2 项 WebGL 预检与降级路径无浏览器 E2E 覆盖，仅逻辑层断言

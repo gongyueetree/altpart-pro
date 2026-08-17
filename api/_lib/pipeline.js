@@ -272,7 +272,7 @@ async function resolveOriginalPart(partNumber, onProgress) {
  */
 async function runPipeline({ partNumber, mode, scenario, application = "generic", preferredManufacturers = [], constraints = {}, priorityOrder, originalData, procurement, onProgress }) {
   const startTime = Date.now();
-  const stats = { localDbHits: 0, apiHits: 0, aiLookups: 0 };
+  const stats = { localDbHits: 0, apiHits: 0, aiLookups: 0, duplicatesMerged: 0 };
 
   // ─── Step 1: 解析原始器件（本地优先）───
   const original = (originalData?.parameters?.length)
@@ -300,11 +300,28 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     ? applyScenarioPriority(usable, application)
     : usable.map(p => p.id));
 
+  // 按用户优先级重排后再交给 AI。
+  // 此前 getCandidates 拿到的是 original.parameters 的**原始顺序**，它内部只取前 6 个
+  // 当作"关键参数"写进提示词 —— 于是用户怎么拖拽优先级，AI 看到的关键参数都一样，
+  // 候选自然一模一样，表现为"调完优先级点重新推荐没有任何变化"。
+  const orderedParams = [
+    ...order.map(id => usable.find(p => p.id === id)).filter(Boolean),
+    ...usable.filter(p => !order.includes(p.id)),
+  ];
+
   // ─── Step 2: AI 推荐 10 个候选 ───
   onProgress?.(`AI 正在搜索候选型号（目标 ${AI_CANDIDATE_COUNT} 个）...`);
   let candidatePNs = [], aiEliminated = [], lastCandidateError = null;
   const candCategory = {};   // 型号 → AI 声明的功能类别
-  const candCk = `cand10:${partNumber}:${mode}:${scenario || ""}:${application}`;
+  // 缓存键必须覆盖**所有影响候选检索的输入**。
+  // 旧键只有 型号+模式+场景+应用，漏了优先级与优选厂商 —— 改这两项后 24 小时内
+  // 必然命中旧候选，这是"重新推荐没变化"的第二个成因。
+  const candKeyOf = () => {
+    const prio = orderedParams.slice(0, 6).map(p => p.id).join(">");
+    const mfrKey = [...preferredManufacturers].map(m => String(m).toLowerCase().trim()).sort().join(",");
+    return `cand10:${partNumber}:${mode}:${scenario || ""}:${application}:${prio}:${mfrKey}`;
+  };
+  const candCk = candKeyOf();
   const candCached = cache.get(candCk);
   if (candCached) {
     candidatePNs = (candCached.candidates || []).map(c => (typeof c === "string" ? c : c?.pn)).filter(Boolean);
@@ -313,7 +330,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   } else {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const aiResult = await getCandidates(original, original.category, params, preferredManufacturers, mode, scenario, AI_CANDIDATE_COUNT, getApplicationHint(application));
+        const aiResult = await getCandidates(original, original.category, orderedParams, preferredManufacturers, mode, scenario, AI_CANDIDATE_COUNT, getApplicationHint(application));
         const rawCands = (aiResult.candidates || []).slice(0, AI_CANDIDATE_COUNT);
         candidatePNs = rawCands.map(c => (typeof c === "string" ? c : c?.pn)).filter(Boolean);
         rawCands.forEach(c => { if (c && typeof c === "object" && c.pn && c.functionCategory)
@@ -409,7 +426,35 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     });
   }
 
-  if (!fetchResults.length) throw new Error("所有候选型号均无法获取参数");
+  if (!fetchResults.length) {
+    // 这是业务结果（候选都查不到数据），不是系统故障。
+    // 旧代码抛裸 Error → recommend.js 归入 INTERNAL_ERROR「服务内部错误·可重试」，
+    // 用户重试多少次都一样。国产替代模式最容易撞上：AI 给出的国产型号
+    // ezPLM 未收录、DigiKey/Mouser 也不经销，于是全部查询失败。
+    const err = new Error(
+      `${candidatePNs.length} 个候选型号均未能获取到参数数据（本地库未收录且分销商/联网查询失败）`);
+    err.noCandidateData = true;
+    err.candidates = candidatePNs.slice(0, 20);
+    err.unverified = unverified.slice(0, 20);
+    throw err;
+  }
+
+  // ─── Step 3.4: 同一型号去重合并 ───
+  // 前面那次去重发生在 **AI 给出型号字符串时**，只能挡住字面重复。
+  // 同一颗料常以 LM358 / LM358DR / lm358-dr 多种写法进入候选，各自查询后
+  // 解析到同一订货号，结果就是推荐列表里两三张型号一样的卡片，
+  // 且每张只带着自己那一路数据源的半份参数。这里按解析后的
+  // 「归一化 MPN + canonical 厂商」再去重，并按 ezPLM > DigiKey/Mouser > AI
+  // 的优先级逐参数合并，让合并后的记录拿着尽可能完整的参数再进评分。
+  const { mergeCandidates } = require("./candidate-merge");
+  const mergeOut = mergeCandidates(fetchResults);
+  if (mergeOut.duplicates.length) {
+    console.log(`[Pipeline] 合并重复候选 ${mergeOut.duplicates.length} 条:`,
+      mergeOut.duplicates.map(d => `${d.partNumber}→${d.mergedInto}`).join(", "));
+  }
+  stats.duplicatesMerged = mergeOut.duplicates.length;
+  fetchResults.length = 0;
+  fetchResults.push(...mergeOut.merged);
 
   // ─── Step 3.5: 功能类别一致性校验 ───
   // 教训：AI 曾把 AD8333(I/Q解调器) 当作 AD603(可变增益放大器) 的替代，
@@ -611,7 +656,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       pipeline: { dataPath: original._dataPath, candidatesRequested: AI_CANDIDATE_COUNT,
         candidatesReceived: candidatePNs.length, candidatesVerified: fetchResults.length,
         candidatesEliminated: eliminated.length, finalCount: Math.min(scored.length, FINAL_RESULT_COUNT),
-        localDbHits: stats.localDbHits, aiLookups: stats.aiLookups,
+        localDbHits: stats.localDbHits, aiLookups: stats.aiLookups, duplicatesMerged: stats.duplicatesMerged,
         executionTimeMs: Date.now() - startTime, application, mode,
         modeNote: PROFILES[mode]?.note || "", scenarioConstraints: scenarioApplied,
         sortedBy: "real_distributor_price" },
@@ -647,6 +692,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       candidatesEliminated: eliminated.length,
       finalCount: Math.min(scored.length, FINAL_RESULT_COUNT),
       localDbHits: stats.localDbHits,
+      duplicatesMerged: stats.duplicatesMerged,
       aiLookups: stats.aiLookups,
       executionTimeMs: Date.now() - startTime,
       application,

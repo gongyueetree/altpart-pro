@@ -62,7 +62,12 @@ module.exports = withCors(async (req, res) => {
     try {
       const r = await getAiPinout(pn, expectedPins, footprint);
       if (r?.pins?.length) { out.aiPinout = r; out.sources.symbol = "ai_pinout"; }
-    } catch (e) { console.warn("[ecad] ai pinout:", e.message); }
+      // 被拒时把具体原因带回前端，否则用户只看到"没生成引脚名"，无从判断该重试还是该换来源
+      else if (r?.rejected) out.aiPinoutRejected = r.rejected;
+    } catch (e) {
+      console.warn("[ecad] ai pinout:", e.message);
+      out.aiPinoutRejected = { code: "ai_call_failed", message: "AI 引脚推断执行失败", detail: e.message };
+    }
   }
 
   res.status(200).json({ success: true, ...out });

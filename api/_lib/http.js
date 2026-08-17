@@ -8,6 +8,7 @@ const BIZ = {
   PART_UNVERIFIED:       { status: 422, retryable: false },
   VARIANT_NOT_RESOLVED:  { status: 422, retryable: false },
   NO_VERIFIED_CANDIDATES:{ status: 200, retryable: false },  // 业务上是"有结论"，非系统失败
+  NO_CANDIDATE_DATA:     { status: 200, retryable: false },  // 候选都查不到参数：业务结果，重试无用
   PIN_EVIDENCE_MISSING:  { status: 200, retryable: false },
   AI_INVALID_RESPONSE:   { status: 502, retryable: true },
   UPSTREAM_TIMEOUT:      { status: 504, retryable: true },

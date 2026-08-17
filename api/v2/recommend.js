@@ -101,6 +101,25 @@ module.exports = withCors(async (req, res) => {
     return ok(res, { ...result, requestId: rid, timings: stages, totalMs: Date.now() - t0 });
   } catch (e) {
     console.error(`[recommend][${rid}]`, e.message);
+
+    // 候选全部查不到数据是业务结果，不是系统故障 —— 必须给出可操作说明，
+    // 否则用户看到的是「服务内部错误·可重试」，重试多少次都一样。
+    if (e.noCandidateData) {
+      return bizFail(res, "NO_CANDIDATE_DATA", e.message,
+        { requestId: rid, stage: "candidate_lookup",
+          details: {
+            mode, modeNote: PROFILES[mode]?.note,
+            hint: mode === "domestic"
+              ? "国产型号常未被 ezPLM 收录，且 DigiKey/Mouser 不经销，因而查不到参数。"
+                + "可改用「功能兼容」模式，或先把这些型号录入 ezPLM 元器件库后重试。"
+              : "可改用「功能兼容」模式放宽检索，或确认这些型号是否真实存在。",
+            candidates: e.candidates || [],
+            eliminatedCount: (e.unverified || []).length,
+            eliminated: (e.unverified || []).map(u => ({ ...u, stage: "lookup_failed" })),
+          },
+          diagnostics: { stages, totalMs: Date.now() - t0 } });
+    }
+
     // 上游异常可能被 pipeline 包装，需看 cause 才能正确分类
     const root = e.cause || e;
     const upstream = classifyUpstream(root);

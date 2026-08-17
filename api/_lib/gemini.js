@@ -189,7 +189,15 @@ async function getCandidates(part, category, params, mfrs, mode, scenario, count
   const modeDesc = { pin2pin:"严格 pin-to-pin", pkgCompat:"封装兼容", funcCompat:"功能兼容",
     domestic:"国产替代优先", lowCost:"低成本优先" }[mode] || "功能兼容";
   const mfrNote = mfrs?.length ? `\n优选厂商：${mfrs.join(",")}` : "";
-  const keyParams = params.slice(0, 6).map(p => `${p.name}=${p.value}${p.unit || ""}`).join(", ");
+  // params 已由 pipeline 按用户拖拽的优先级重排，第 1 项即用户最看重的指标。
+  // 必须把这个顺序显式写进提示词，否则模型只会把它们当成一组无差别的规格。
+  const keyParams = params.slice(0, 6).map((p, i) => `${i + 1}. ${p.name}=${p.value}${p.unit || ""}`).join("\n");
+  const topPriority = params.slice(0, 3).map(p => p.name).filter(Boolean);
+  const priorityNote = topPriority.length
+    ? `\n\n⚠ 参数优先级（用户按重要性排序，序号越小越重要）：${topPriority.join(" > ")}。
+   候选必须优先保证「${topPriority[0]}」不劣于原型号；该项明显更差的型号不要列入，
+   即使其它参数都更好。排序时也按这个优先级从优到劣排列 candidates。`
+    : "";
 
   const scenarioHint = {
     shortage: "缺货替代：必须能直接焊接替换，不改 PCB",
@@ -210,8 +218,9 @@ candidates 给 ${count} 个真实型号（系统会再校验筛选，宁多勿�
 ⚠ 严禁把原型号本身或其封装/温度变体（同一芯片不同后缀）列入 candidates —— 必须是不同的芯片型号。`;
 
   const prompt = `原始器件：${part.partNumber}（${category}，${part.manufacturer}）
-关键参数：${keyParams}
-替代模式：${modeDesc}${mfrNote}
+关键参数（按用户优先级排序）：
+${keyParams}
+替代模式：${modeDesc}${mfrNote}${priorityNote}
 请给出 ${count} 个候选替代型号。`;
 
   // 候选发现不需要联网搜索（靠模型知识即可，更快），关闭 google_search 避免超时

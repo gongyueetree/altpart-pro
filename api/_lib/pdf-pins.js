@@ -20,6 +20,25 @@ async function getPdfjs() {
   return pdfjsPromise;
 }
 
+// 标准字体与 CMap 资源目录。
+// 不提供时 pdfjs 会告警并对 Type1 标准字体（Helvetica/Times…）退化，
+// 中文数据手册的 CJK 编码更会直接抽不出字。路径不存在则不传，避免打包环境下报错。
+let pdfAssets = null;
+function getPdfAssets() {
+  if (pdfAssets) return pdfAssets;
+  pdfAssets = {};
+  try {
+    const path = require("path");
+    const { existsSync } = require("fs");
+    const root = path.dirname(require.resolve("pdfjs-dist/package.json"));
+    const fonts = path.join(root, "standard_fonts") + path.sep;
+    const cmaps = path.join(root, "cmaps") + path.sep;
+    if (existsSync(fonts)) pdfAssets.standardFontDataUrl = fonts;
+    if (existsSync(cmaps)) { pdfAssets.cMapUrl = cmaps; pdfAssets.cMapPacked = true; }
+  } catch { /* 资源缺失时按无资源模式运行 */ }
+  return pdfAssets;
+}
+
 /** 下载 PDF（限制大小与协议，避免 SSRF 与超大文件） */
 async function fetchPdf(url) {
   let u;
@@ -38,7 +57,9 @@ async function fetchPdf(url) {
 /** 解析 PDF → 页/行/坐标 */
 async function parsePdf(bytes, maxPages = 12) {
   const pdfjs = await getPdfjs();
-  const pdf = await pdfjs.getDocument({ data: bytes, disableWorker: true, isEvalSupported: false }).promise;
+  const pdf = await pdfjs.getDocument({
+    data: bytes, disableWorker: true, isEvalSupported: false, ...getPdfAssets(),
+  }).promise;
   const pages = [];
   const n = Math.min(pdf.numPages, maxPages);
   for (let i = 1; i <= n; i++) {
