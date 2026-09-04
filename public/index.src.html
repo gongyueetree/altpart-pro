@@ -28,7 +28,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <script type="text/babel">
 const{useState,useEffect,useRef}=React;
 
-const APP_VERSION="6.9.10";
+const APP_VERSION="7.0.0";
 
 const C={
   green:"#1a6c4e",greenLight:"#e8f5ef",greenMid:"#c2e5d3",greenAccent:"#2d9d6f",
@@ -1741,9 +1741,9 @@ function PartDetailModal({pn,rec,onClose}){
                 <td style={{padding:"9px 10px",fontFamily:"'DM Mono',monospace",color:o.stock>0?C.green:"#c0392b"}}>{o.stock!=null?o.stock.toLocaleString():"—"}</td>
                 <td style={{padding:"9px 10px",fontFamily:"'DM Mono',monospace"}}>{o.moq??"—"}</td>
                 <td style={{padding:"9px 10px"}}><div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                  {(o.tiers||[]).map((t,j)=><span key={j} style={{fontSize:11,fontFamily:"'DM Mono',monospace"}}>{t.qty}+:<b style={{color:C.green}}>${t.price}</b></span>)}
+                  {(o.tiers||[]).map((t,j)=><span key={j} style={{fontSize:11,fontFamily:"'DM Mono',monospace"}}>{t.qty}+:<b style={{color:C.green}}>{o.currency||"USD"} {t.price}</b></span>)}
                 </div></td>
-                <td style={{padding:"9px 10px"}}>{o.leadTimeDays?`${o.leadTimeDays}天`:"—"}</td>
+                <td style={{padding:"9px 10px"}}>{o.leadTime?.days?`${o.leadTime.days}天${o.leadTime.abnormal?" ⚠":""}`:"—"}</td>
                 <td style={{padding:"9px 10px"}}>{o.url&&<a href={o.url} target="_blank" rel="noreferrer" style={{color:C.indigo,fontSize:11}}>查看 ↗</a>}</td>
               </tr>))}</tbody>
             </table>):(
@@ -1898,8 +1898,9 @@ function MarketStrip({rec,market}){
   const cheaper=d!=null&&d<0;
   return(<div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",padding:"8px 10px",borderRadius:7,background:C.bgSoft,border:`1px solid ${C.borderLight}`,fontSize:12}}>
     <span style={{fontWeight:600,color:C.textSec}}>💰</span>
-    {m.priceUSD1!=null&&<span style={{fontFamily:"'DM Mono',monospace"}}>1片 <b style={{color:C.green}}>${m.priceUSD1}</b></span>}
-    {m.priceUSD100!=null&&<span style={{fontFamily:"'DM Mono',monospace"}}>100片 <b style={{color:C.green}}>${m.priceUSD100}</b></span>}
+    {m.unitPrice!=null&&<span style={{fontFamily:"'DM Mono',monospace"}}>{m.priceQuantity||1}片阶梯价 <b style={{color:C.green}}>{m.currency||"USD"} {m.unitPrice}</b></span>}
+    {m.unitPrice==null&&m.priceUSD1!=null&&<span style={{fontFamily:"'DM Mono',monospace"}}>1片 <b style={{color:C.green}}>${m.priceUSD1}</b></span>}
+    {m.unitPrice==null&&m.priceUSD100!=null&&<span style={{fontFamily:"'DM Mono',monospace"}}>100片 <b style={{color:C.green}}>${m.priceUSD100}</b></span>}
     {d!=null&&(<span style={{padding:"2px 8px",borderRadius:4,fontWeight:700,fontFamily:"'DM Mono',monospace",
       background:cheaper?C.greenLight:"#fdeaea",color:cheaper?C.green:"#c0392b",border:`1px solid ${cheaper?C.greenMid:"#f5c6c6"}`}}>
       {cheaper?"↓省":"↑贵"} ${Math.abs(d).toFixed(2)}{dp!=null?` (${dp>0?"+":""}${dp}%)`:""}
@@ -2105,7 +2106,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
   const fetchMarket=async(pns)=>{
     setMarket(null);
     try{
-      const r=await fetch("/api/v2/market",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({partNumbers:pns})});
+      const r=await fetch("/api/v2/market",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({partNumbers:pns,procurement})});
       const d=await r.json().catch(()=>null);
       if(d&&d.success)setMarket(d.parts||{});
       else setMarket({});
@@ -2118,6 +2119,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
     PIN_EVIDENCE_MISSING:"该模式需要引脚映射证据，当前候选均无法验证引脚",
     PART_UNVERIFIED:"原型号未经权威来源验证，无法推荐",
     VARIANT_NOT_RESOLVED:"未能确定具体订货型号，请先选择封装变体",
+    CONTEXT_INVALID:"分析结果已过期或被修改，请返回后重新分析器件",
     INVALID_REQUEST:"请求参数有误",
     UPSTREAM_TIMEOUT:"上游服务超时",
     UPSTREAM_UNAVAILABLE:"上游服务不可用",
@@ -2135,7 +2137,8 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
       const r=await fetch("/api/v2/recommend",{method:"POST",headers:{"Content-Type":"application/json"},
         signal:ctl.signal,
         body:JSON.stringify({partNumber:original.partNumber,mode,application,preferredManufacturers:mfrs,constraints,
-          priorityOrder:params.map(p=>p.id),orderSource,procurement:mode==="lowCost"?procurement:undefined,original:original._dataPath==="demo"?undefined:original})});
+          priorityOrder:params.map(p=>p.id),orderSource,procurement,
+          analysisContext:original._analysisContext||undefined})});
       clearTimeout(timer);
       const ct=r.headers.get("content-type")||"";
       const d=ct.includes("json")?await r.json().catch(()=>null):null;
@@ -2612,10 +2615,11 @@ function App(){
       const d=ct.includes("json")?await r.json().catch(()=>null):null;
 
       if(r.ok&&d&&d.success&&d.original?.parameters?.length){
+        const secured={...d.original,_analysisContext:d.analysisContext||null};
         if((d.original.variants||[]).length>=2){
-          setVariantBase(d.original);setPage("variants");
+          setVariantBase(secured);setPage("variants");
         }else{
-          setOriginal({...d.original,_pkgConfirmed:true});setPage("workbench");
+          setOriginal({...secured,_pkgConfirmed:true});setPage("workbench");
         }
         return;
       }
@@ -2667,10 +2671,10 @@ function App(){
           const params=(variantBase.parameters||[]).map(p=>
             (p.name.includes("封装")||String(p.nameEn||"").toLowerCase().includes("package"))&&v.package
               ?{...p,value:v.package}:p);
-          setOriginal({...variantBase,partNumber:v.pn,parameters:params,variants:[],_pkgConfirmed:true});
+          setOriginal({...variantBase,partNumber:v.pn,parameters:params,variants:[],_pkgConfirmed:true,_analysisContext:null});
           setPage("workbench");
         }}
-        onSkip={()=>{setOriginal({...variantBase,variants:[],_pkgConfirmed:false});setPage("workbench")}}
+        onSkip={()=>{setOriginal({...variantBase,variants:[],_pkgConfirmed:false,_analysisContext:null});setPage("workbench")}}
         onBack={()=>setPage("home")}/>}
       {page==="workbench"&&original&&<Workbench key={original.partNumber} original={original} demoNote={demoNote} onBack={()=>setPage("home")} onSwitchVariant={v=>analyze(v.pn)}/>}
     </main>

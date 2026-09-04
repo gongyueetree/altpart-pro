@@ -4,6 +4,7 @@ const { withCors } = require("../_lib/_cors");
 const { findSymbol, findFootprint, findModel3D } = require("../_lib/kicad-lib");
 const { extractPinsFromPdf } = require("../_lib/pdf-pins");
 const { getAiPinout } = require("../_lib/pinout");
+const { guardApi } = require("../_lib/security");
 
 /** 提取基础型号（去封装/包装后缀），官方库多以基础型号命名符号 */
 function baseMpn(mpn) {
@@ -17,6 +18,7 @@ function baseMpn(mpn) {
 module.exports = withCors(async (req, res) => {
   const { pn, footprint, kind, datasheet, pins, aiPinout } = req.query || {};
   if (!pn) { res.status(400).json({ error: "pn required" }); return; }
+  if (!guardApi(req, res, { cost: String(aiPinout) === "1" ? 5 : 2 })) return;
   const expectedPins = pins ? parseInt(pins) : null;
 
   const out = { partNumber: pn, symbol: null, footprint: null, model3d: null, pdfPins: null, sources: {} };

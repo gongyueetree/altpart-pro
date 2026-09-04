@@ -14,6 +14,19 @@ const TTL = 7 * 86400;
  *   2. 去掉包装后缀后相同（TL431ACDBR vs TL431ACDBRG4）
  *   3. 以上都无 → null
  */
+function mpnMatchType(requestedMpn, resultMpn) {
+  const norm = x => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const target = norm(requestedMpn), got = norm(resultMpn);
+  if (target && got === target) return "exact";
+  const targetBody = norm(splitMpn(requestedMpn).body);
+  const gotBody = norm(splitMpn(resultMpn).body);
+  if (targetBody && gotBody === targetBody) return "orderable_variant";
+  const targetBase = norm(splitMpn(requestedMpn).baseDevice);
+  const gotBase = norm(splitMpn(resultMpn).baseDevice);
+  if (targetBase && targetBase.length >= 4 && gotBase === targetBase) return "family_variant";
+  return "unrelated";
+}
+
 function pickExact(list, requestedMpn, mpnOf, mfrOf) {
   if (!Array.isArray(list) || !list.length) return null;
   const norm = x => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -33,6 +46,12 @@ function pickExact(list, requestedMpn, mpnOf, mfrOf) {
     return b && b === targetBase && b.length >= 4;
   });
   return familyHit || null;
+}
+
+/** 行情必须是完整型号/包装后缀级精确命中，不能用同系列另一订货号报价。 */
+function pickStrictExact(list, requestedMpn, mpnOf) {
+  if (!Array.isArray(list)) return null;
+  return list.find(x => ["exact", "orderable_variant"].includes(mpnMatchType(requestedMpn, mpnOf(x)))) || null;
 }
 
 /**
@@ -124,6 +143,7 @@ async function digikeyPart(pn) {
       });
     }
     const pkg = (p.Parameters || []).find(a => /package\s*\/?\s*case|supplier device package/i.test(a?.ParameterText || ""))?.ValueText;
+    const matchType = mpnMatchType(pn, p.ManufacturerProductNumber);
     return {
       partNumber: p.ManufacturerProductNumber || pn,
       manufacturer: p.Manufacturer?.Name || "",
@@ -135,6 +155,8 @@ async function digikeyPart(pn) {
       ...classifyProductUrl(p.ProductUrl || ""),
       leadTime: normalizeLeadTime(p.ManufacturerLeadWeeks, "weeks"),
       dataRetrievedAt: new Date().toISOString(),
+      exactMatch: matchType !== "family_variant",
+      _matchType: matchType,
       _source: "digikey",
     };
   } catch (e) { console.warn("[distributor] DigiKey search:", e.message); return null; }
@@ -166,6 +188,7 @@ async function mouserPart(pn) {
         source: "mouser", sourceLabel: "Mouser", confidence: "high", verified: true,
       });
     }
+    const matchType = mpnMatchType(pn, p.ManufacturerPartNumber);
     return {
       partNumber: p.ManufacturerPartNumber || pn,
       manufacturer: p.Manufacturer || "",
@@ -177,6 +200,8 @@ async function mouserPart(pn) {
       ...classifyProductUrl(p.ProductDetailUrl || ""),
       leadTime: normalizeLeadTime(p.LeadTime, /week|周/i.test(String(p.LeadTime || "")) ? "weeks" : "days"),
       dataRetrievedAt: new Date().toISOString(),
+      exactMatch: matchType !== "family_variant",
+      _matchType: matchType,
       _source: "mouser",
     };
   } catch (e) { console.warn("[distributor] Mouser search:", e.message); return null; }
@@ -213,4 +238,5 @@ async function getDistributorPart(partNumber) {
   return out;
 }
 
-module.exports = { getDistributorPart, digikeyPart, mouserPart, normalizeLeadTime, classifyProductUrl, LEAD_TIME_MAX_DAYS };
+module.exports = { getDistributorPart, digikeyPart, mouserPart, pickExact, pickStrictExact, mpnMatchType,
+  normalizeLeadTime, classifyProductUrl, LEAD_TIME_MAX_DAYS };

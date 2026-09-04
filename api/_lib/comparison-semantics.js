@@ -92,9 +92,62 @@ const PKG_COMPAT = {
   "QFN-16": ["WQFN-16", "DFN-16"], "MSOP-8": ["VSSOP-8"],
 };
 
-/** 封装名归一（去尺寸后缀，便于家族比较） */
+/** 封装名归一（仅用于家族比较；不能据此证明 footprint 完全相同） */
+function packageName(name) {
+  return String(name || "").trim().toUpperCase().replace(/^.*:/, "").replace(/\s+/g, "");
+}
 function pkgFamily(name) {
-  return String(name || "").toUpperCase().replace(/_.*$/, "").replace(/\s*\(.*\)$/, "").trim();
+  return packageName(name).replace(/_.*$/, "").replace(/\(.*\)$/, "").trim();
 }
 
-module.exports = { SEMANTICS, semanticsOf, PKG_COMPAT, pkgFamily };
+/** 从 KLC/JEDEC 风格名称中提取能决定落板兼容性的几何特征。 */
+function packageGeometry(name) {
+  const raw = packageName(name);
+  const body = raw.match(/(?:_|^)(\d+(?:\.\d+)?)X(\d+(?:\.\d+)?)MM(?:_|$)/i);
+  const pitch = raw.match(/(?:_|^)P(\d+(?:\.\d+)?)MM(?:_|$)/i);
+  const ep = raw.match(/(?:_|^)(?:EP|EXPOSEDPAD)(?:_?(\d+(?:\.\d+)?)X(\d+(?:\.\d+)?)MM)?/i);
+  const height = raw.match(/(?:_|^)H(\d+(?:\.\d+)?)MM(?:_|$)/i);
+  return {
+    raw, family: pkgFamily(raw),
+    body: body ? [Number(body[1]), Number(body[2])] : null,
+    pitch: pitch ? Number(pitch[1]) : null,
+    exposedPad: !!ep,
+    ep: ep?.[1] ? [Number(ep[1]), Number(ep[2])] : null,
+    height: height ? Number(height[1]) : null,
+  };
+}
+
+const close = (a, b, tol = 0.03) => Math.abs(a - b) <= Math.max(0.02, Math.abs(a) * tol);
+const pairClose = (a, b) => !!a && !!b && close(a[0], b[0]) && close(a[1], b[1]);
+
+/**
+ * exact=true 仅在名称完全相同，或双方都给出且关键几何一致时成立。
+ * SOIC-8_3.9x4.9mm 与 SOIC-8_5.3x6.2mm 绝不能因同属 SOIC-8 得到满分。
+ */
+function comparePackage(original, candidate) {
+  const a = packageGeometry(original), b = packageGeometry(candidate);
+  if (!a.raw || !b.raw) return { known: false, exact: false, compatible: false, reason: "封装未知", original: a, candidate: b };
+  if (a.raw === b.raw && a.body && a.pitch != null)
+    return { known: true, exact: true, compatible: true, reason: "标准化 footprint 名称与几何均一致", original: a, candidate: b };
+  if (a.raw === b.raw)
+    return { known: true, exact: false, compatible: true,
+      reason: "封装家族名称一致，但缺少可证明同一 land pattern 的几何", original: a, candidate: b };
+
+  const sameFamily = a.family === b.family;
+  const aliases = PKG_COMPAT[a.raw] || PKG_COMPAT[a.family] || [];
+  const familyCompatible = sameFamily || aliases.some(x => pkgFamily(x) === b.family);
+  if (!familyCompatible) return { known: true, exact: false, compatible: false, reason: "封装家族不同", original: a, candidate: b };
+
+  const bothDetailed = !!(a.body && b.body && a.pitch != null && b.pitch != null);
+  if (bothDetailed) {
+    const geometryEqual = pairClose(a.body, b.body) && close(a.pitch, b.pitch) &&
+      a.exposedPad === b.exposedPad && (!a.ep || !b.ep || pairClose(a.ep, b.ep)) &&
+      (a.height == null || b.height == null || close(a.height, b.height));
+    return { known: true, exact: false, compatible: geometryEqual,
+      reason: geometryEqual ? "已知几何一致，但 footprint 标识不同，焊盘/跨距仍需核对" : "本体/间距/散热焊盘几何不一致", original: a, candidate: b };
+  }
+  return { known: true, exact: false, compatible: true,
+    reason: "仅能确认封装家族兼容，缺少双方完整几何", original: a, candidate: b };
+}
+
+module.exports = { SEMANTICS, semanticsOf, PKG_COMPAT, pkgFamily, packageGeometry, comparePackage };

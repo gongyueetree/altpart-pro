@@ -15,6 +15,7 @@
  *   GET /api/ezplm?path=reference-designs&partlibId=xxx
  */
 const crypto = require("node:crypto");
+const { guardApi } = require("./_lib/security");
 
 // 手册示例使用 http://www.ezplm.cn；此处默认 https，可用 EZPLM_BASE_URL 覆盖
 const BASE_URL = (process.env.EZPLM_BASE_URL || "https://www.ezplm.cn").replace(/\/$/, "");
@@ -98,6 +99,7 @@ module.exports = async function handler(req, res) {
   const apiKey = process.env.EZPLM_API_KEY;
 
   if (path === "status") return res.status(200).send(JSON.stringify({ configured: !!apiKey }));
+  if (!guardApi(req, res, { cost: 2 })) return;
   if (!apiKey) return res.status(501).send(JSON.stringify({ error: "EZPLM_API_KEY 未配置", hint: "Vercel → Settings → Environment Variables 添加 EZPLM_API_KEY 后 Redeploy" }));
   if (!ALLOWED_PATHS.has(path)) return res.status(400).send(JSON.stringify({ error: "invalid path", allowed: [...ALLOWED_PATHS, "status"] }));
 

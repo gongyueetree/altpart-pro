@@ -64,7 +64,12 @@ test("conditioned：测试条件不同不得直接比较", async t => {
 });
 
 test("compatible_set：封装兼容族", async t => {
-  await t.test("SOIC-8 vs SOIC-8", () => assert.equal(cmp(P("封装", "SOIC-8", "", "Package"), "SOIC-8").score, 100));
+  await t.test("只有 SOIC-8 家族名最多得兼容分", () =>
+    assert.equal(cmp(P("封装", "SOIC-8", "", "Package"), "SOIC-8").score, 80));
+  await t.test("完整相同标准 footprint 才得 100", () => {
+    const fp = "SOIC-8_3.9x4.9mm_P1.27mm";
+    assert.equal(cmp(P("封装", fp, "", "Package"), fp).score, 100);
+  });
   await t.test("SOIC-8 vs SOP-8 同族", () => assert.ok(cmp(P("封装", "SOIC-8", "", "Package"), "SOP-8").score >= 80));
   await t.test("SOIC-8 vs QFN-16 不兼容", () => assert.ok(cmp(P("封装", "SOIC-8", "", "Package"), "QFN-16").score < 20));
 });

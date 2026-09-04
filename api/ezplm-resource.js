@@ -15,6 +15,9 @@ const ALLOWED_SUFFIXES = [
   /^raw\.githubusercontent\.com$/i,   // KiCad 官方库（内置示例用）
 ];
 const isAllowedHost = h => ALLOWED_SUFFIXES.some(re => re.test(String(h || "")));
+const { fetchWithSafeRedirects, readResponseBuffer } = require("./_lib/safe-fetch");
+const { guardApi } = require("./_lib/security");
+const MAX_RESOURCE_BYTES = 30 * 1024 * 1024;
 
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -24,6 +27,7 @@ module.exports = async function handler(req, res) {
     res.status(400).json({ error: "缺少 url 参数" });
     return;
   }
+  if (!guardApi(req, res, { cost: 3 })) return;
 
   let target;
   try { target = new URL(String(raw)); }
@@ -40,9 +44,10 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const upstream = await fetch(target.toString(), {
-      redirect: "follow",
-      signal: AbortSignal.timeout(20000),
+    const { response: upstream, finalUrl } = await fetchWithSafeRedirects(target, {
+      allowedHost: isAllowedHost,
+      maxRedirects: 3,
+      fetchOptions: { signal: AbortSignal.timeout(20000) },
     });
 
     if (!upstream.ok) {
@@ -53,11 +58,17 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const buf = Buffer.from(await upstream.arrayBuffer());
-    const ct = upstream.headers.get("content-type") || guessType(target.pathname);
+    const buf = await readResponseBuffer(upstream, MAX_RESOURCE_BYTES);
+    const upstreamType = String(upstream.headers.get("content-type") || "").toLowerCase();
+    if (/text\/html|application\/xhtml/.test(upstreamType)) {
+      fail(req, res, 502, "上游返回了网页而非资源文件", "文件链接可能已过期，请重新获取");
+      return;
+    }
+    const ct = upstreamType || guessType(finalUrl.pathname);
     res.setHeader("Content-Type", ct);
+    res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Cache-Control", "public, max-age=3600");
-    const name = target.pathname.split("/").pop();
+    const name = String(finalUrl.pathname.split("/").pop() || "").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 180);
     if (/\.(kicad_mod|kicad_sym|step|stp|wrl|lib)$/i.test(name || "")) {
       res.setHeader("Content-Disposition", `inline; filename="${name}"`);
     }

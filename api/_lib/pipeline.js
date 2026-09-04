@@ -3,7 +3,7 @@
 
 const { queryLocalDB, queryLocalDBBatch, searchParts } = require("./ezplm");
 const { applyScenarioPriority, getApplicationHint, scenarioHardParams } = require("./applications");
-const { applyProfile, PROFILES } = require("./rule-profiles");
+const { applyProfile, PROFILES, weightsFor } = require("./rule-profiles");
 const { resolveIdentity, splitMpn, pickVariants } = require("./part-identity");
 const { alignParams } = require("./param-align");
 const { organizeParams } = require("./category-params");
@@ -11,6 +11,9 @@ const { getDistributorPart } = require("./distributor");
 const { analyzeComponent, getCandidates, lookupPartSpecs } = require("./gemini");
 const { fetchComponentFromAPIs } = require("./component");
 const { cache } = require("./cache");
+const { settleMapLimit } = require("./async-utils");
+const { comparePinMaps } = require("./pin-compare");
+const { procurementCacheKey } = require("./procurement");
 
 // 淘汰阈值: 综合分低于此值的候选直接淘汰
 const ELIMINATION_THRESHOLD = 40;
@@ -279,6 +282,23 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     ? originalData                                     // 两段式流程：前端已通过 /analyze 拿到参数，直接复用
     : await resolveOriginalPart(partNumber, onProgress);
   const params = original.parameters;
+  if (!constraints || typeof constraints !== "object" || Array.isArray(constraints)) {
+    const error = new Error("constraints 必须是按参数 ID 索引的对象");
+    error.invalidRequest = true; throw error;
+  }
+  const { validateConstraint } = require("./scoring-node");
+  for (const [paramId, constraint] of Object.entries(constraints)) {
+    const param = params.find(p => p.id === paramId);
+    if (!param) {
+      const error = new Error(`约束引用了未知参数：${paramId}`);
+      error.invalidRequest = true; throw error;
+    }
+    const validation = validateConstraint(constraint, param);
+    if (!validation.valid) {
+      const error = new Error(validation.error);
+      error.invalidRequest = true; throw error;
+    }
+  }
   const isNAv = v => v === undefined || v === null || /^n\/?a$/i.test(String(v).trim());
   const usable = params.filter(p => !isNAv(p.value));
 
@@ -296,7 +316,17 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     effectiveConstraints[pid] = { constraintType: "hard", scenario: application, notWorseThanOriginal: true };
     scenarioApplied.push({ paramId: pid, paramName: p.name, application });
   }
-  const order = priorityOrder || (application && application !== "generic"
+  if (priorityOrder != null && !Array.isArray(priorityOrder)) {
+    const error = new Error("priorityOrder 必须是参数 ID 数组");
+    error.invalidRequest = true; throw error;
+  }
+  const cleanPriority = [...new Set((priorityOrder || []).map(String))];
+  const unknownPriority = cleanPriority.find(id => !usable.some(p => p.id === id));
+  if (unknownPriority) {
+    const error = new Error(`priorityOrder 包含未知参数：${unknownPriority}`);
+    error.invalidRequest = true; throw error;
+  }
+  const order = cleanPriority.length ? cleanPriority : (application && application !== "generic"
     ? applyScenarioPriority(usable, application)
     : usable.map(p => p.id));
 
@@ -319,7 +349,8 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   const candKeyOf = () => {
     const prio = orderedParams.slice(0, 6).map(p => p.id).join(">");
     const mfrKey = [...preferredManufacturers].map(m => String(m).toLowerCase().trim()).sort().join(",");
-    return `cand10:${partNumber}:${mode}:${scenario || ""}:${application}:${prio}:${mfrKey}`;
+    const procurementKey = mode === "lowCost" ? procurementCacheKey(procurement) : "";
+    return `cand10:${partNumber}:${mode}:${scenario || ""}:${application}:${prio}:${mfrKey}:${procurementKey}`;
   };
   const candCk = candKeyOf();
   const candCached = cache.get(candCk);
@@ -330,7 +361,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   } else {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const aiResult = await getCandidates(original, original.category, orderedParams, preferredManufacturers, mode, scenario, AI_CANDIDATE_COUNT, getApplicationHint(application));
+        const aiResult = await getCandidates(original, original.category, orderedParams, preferredManufacturers, mode, scenario, AI_CANDIDATE_COUNT, getApplicationHint(application), procurement);
         const rawCands = (aiResult.candidates || []).slice(0, AI_CANDIDATE_COUNT);
         candidatePNs = rawCands.map(c => (typeof c === "string" ? c : c?.pn)).filter(Boolean);
         rawCands.forEach(c => { if (c && typeof c === "object" && c.pn && c.functionCategory)
@@ -420,14 +451,13 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
 
   if (toLookup.length) {
     onProgress?.(`正在并发校验 ${toLookup.length} 个候选...`);
-    const results = await Promise.allSettled(
-      toLookup.map(pn => fetchComponentFromAPIs(pn, params))
-    );
+    const results = await settleMapLimit(toLookup, 3, pn => fetchComponentFromAPIs(pn, params));
     results.forEach((r, i) => {
       const pn = toLookup[i];
       if (r.status === "fulfilled" && r.value) {
         cache.set(compKey(pn), r.value, 7 * 86400);
-        stats.aiLookups++;
+        if (/^(digikey|mouser)/.test(r.value._source || "")) stats.apiHits++;
+        else stats.aiLookups++;
         fetchResults.push(r.value);
       } else {
         unverified.push({ partNumber: pn, manufacturer: "", reason: "本地库未收录且联网查询失败" });
@@ -465,6 +495,13 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   fetchResults.length = 0;
   fetchResults.push(...mergeOut.merged);
 
+  // 逐针映射是“直接替代”的独立硬证据。没有结构化权威 PinMap 时 fail-closed；
+  // 有冲突时在 Pin-to-Pin 模式直接淘汰，其它模式也保留冲突供工程师查看。
+  for (const cand of fetchResults) {
+    cand.pinComparison = comparePinMaps(original, cand);
+    cand.pinVerified = cand.pinComparison.verified === true;
+  }
+
   // ─── Step 3.5: 功能类别一致性校验 ───
   // 教训：AI 曾把 AD8333(I/Q解调器) 当作 AD603(可变增益放大器) 的替代，
   // 且沿用了相邻型号的描述。功能类别不同的器件不可能是替代料，必须程序化拦截。
@@ -491,8 +528,13 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   if (mode === "lowCost" && fetchResults.length) {
     try {
       onProgress?.("正在获取分销商真实报价...");
-      const { getMarketInfo } = require("./market");
-      const mk = await getMarketInfo([partNumber, ...fetchResults.map(c => c.partNumber)].slice(0, 8));
+      const { getMarketInfo, buildManufacturerHints } = require("./market");
+      const marketParts = [original, ...fetchResults];
+      const mk = await getMarketInfo(
+        [partNumber, ...fetchResults.map(c => c.partNumber)].slice(0, 8),
+        procurement,
+        { manufacturers: buildManufacturerHints(marketParts) },
+      );
       for (const c of fetchResults) c.market = mk.parts?.[c.partNumber] || null;
       original._market = mk.parts?.[partNumber] || null;
     } catch (e) { console.warn("[Pipeline] 低成本报价获取失败:", e.message); }
@@ -501,6 +543,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   // ─── Step 4: 算法评分 + 淘汰 + 排序 ───
   onProgress?.("正在计算匹配评分并筛选...");
   const { calculateScore } = require("./scoring-node");
+  const scoreWeights = weightsFor(mode, params, order);
   const scored = [];
   const lowScored = [];   // 低于淘汰线的候选（若最终无合格者，从中救回Top3）
   // 淘汰详情构造器 —— 必须在**所有**使用它的循环之外定义。
@@ -537,6 +580,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     technical: result.technical, evidenceCoverage: result.evidenceCoverage,
     sourceConfidence: result.sourceConfidence, confidence: result.confidence,
     pinVerified: result.pinVerified,
+    pinComparison: cand.pinComparison,
     paramScores: result.paramScores, dimensionScores: result.dimensionScores,
     replacementLevel: result.replacementLevel,
     dataSource: cand._source === "ezplm" ? "本地数据库" : /^digikey/.test(cand._source||"") ? "DigiKey" : /^mouser/.test(cand._source||"") ? "Mouser" : "AI搜索",
@@ -549,7 +593,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   ];
 
   for (const cand of fetchResults) {
-    const result = calculateScore(params, cand, order, effectiveConstraints);
+    const result = calculateScore(params, cand, order, effectiveConstraints, { mode, weights: scoreWeights });
 
     // 功能类别不符 → 直接淘汰（替代料的前提是同类器件）
     // 淘汰项也保留评分详情：用户需要知道"哪些参数合适、哪些不合适"
@@ -626,8 +670,8 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
   // 低成本模式：有真实报价者按价格升序，其余按可信度
   if (mode === "lowCost") {
     scored.sort((a, b) => {
-      const pa = a.market?.source === "distributor_api" ? (a.market.priceUSD100 ?? a.market.priceUSD1) : null;
-      const pb = b.market?.source === "distributor_api" ? (b.market.priceUSD100 ?? b.market.priceUSD1) : null;
+      const pa = a.market?.source === "distributor_api" ? (a.market.unitPrice ?? a.market.priceUSD100 ?? a.market.priceUSD1) : null;
+      const pb = b.market?.source === "distributor_api" ? (b.market.unitPrice ?? b.market.priceUSD100 ?? b.market.priceUSD1) : null;
       if (pa != null && pb != null) return pa - pb;
       if (pa != null) return -1;
       if (pb != null) return 1;
@@ -637,10 +681,10 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       pipeline: { dataPath: original._dataPath, candidatesRequested: AI_CANDIDATE_COUNT,
         candidatesReceived: candidatePNs.length, candidatesVerified: fetchResults.length,
         candidatesEliminated: eliminated.length, finalCount: Math.min(scored.length, FINAL_RESULT_COUNT),
-        localDbHits: stats.localDbHits, aiLookups: stats.aiLookups, duplicatesMerged: stats.duplicatesMerged,
+        localDbHits: stats.localDbHits, apiHits: stats.apiHits, aiLookups: stats.aiLookups, duplicatesMerged: stats.duplicatesMerged,
         executionTimeMs: Date.now() - startTime, application, mode,
         modeNote: PROFILES[mode]?.note || "", scenarioConstraints: scenarioApplied,
-        sortedBy: "real_distributor_price" },
+        procurement, sortedBy: "real_distributor_price_at_quantity" },
       original,
       recommendations: scored.filter(x => x.authoritative && !x.needsVerification).slice(0, FINAL_RESULT_COUNT),
       pendingVerification: scored.filter(x => !x.authoritative || x.needsVerification).slice(0, FINAL_RESULT_COUNT).map(x => ({
@@ -673,11 +717,13 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
       candidatesEliminated: eliminated.length,
       finalCount: Math.min(scored.length, FINAL_RESULT_COUNT),
       localDbHits: stats.localDbHits,
+      apiHits: stats.apiHits,
       duplicatesMerged: stats.duplicatesMerged,
       aiLookups: stats.aiLookups,
       executionTimeMs: Date.now() - startTime,
       application,
       mode, modeNote: PROFILES[mode]?.note || "",
+      procurement,
       scenarioConstraints: scenarioApplied,
     },
     original,

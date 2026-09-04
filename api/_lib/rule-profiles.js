@@ -66,6 +66,7 @@ const PROFILES = {
 };
 
 const { isDomesticManufacturer } = require("./manufacturers");
+const { comparePackage } = require("./comparison-semantics");
 
 /** 保留旧签名（返回布尔），内部改用厂商主数据 */
 function isDomestic(manufacturer, extra = "") {
@@ -124,11 +125,19 @@ function applyProfile(mode, ctx) {
     const pk = findParam(/封装|package/i);
     if (!pk) return { pass: true, downgrade: "NEEDS_VERIFICATION", reason: "原型号未标注封装，无法执行封装门槛" };
     if (!pk.score?.known) return { pass: false, reason: `${p.label} 模式要求已知封装，候选未提供封装信息` };
-    const s = pk.score.score ?? 0;
-    if (p.requirePackageExact && s < 100)
-      return { pass: false, reason: `${p.label} 模式要求封装完全一致（原 ${pk.orig.value} vs 候选 ${pk.cand?.value}）` };
-    if (p.requirePackageCompat && s < 80)
-      return { pass: false, reason: `${p.label} 模式要求封装一致或同兼容族（原 ${pk.orig.value} vs 候选 ${pk.cand?.value}）` };
+    const cmp = comparePackage(pk.orig.value, pk.cand?.value);
+    if (p.requirePackageExact && !cmp.exact)
+      return { pass: false, reason: `${p.label} 模式要求封装完全一致且关键几何相同：${cmp.reason}（原 ${pk.orig.value} vs 候选 ${pk.cand?.value}）` };
+    if (p.requirePackageCompat && !cmp.compatible)
+      return { pass: false, reason: `${p.label} 模式要求封装一致或同兼容族：${cmp.reason}（原 ${pk.orig.value} vs 候选 ${pk.cand?.value}）` };
+  }
+
+  // Pin-to-Pin：结构化 PinMap 冲突直接淘汰；缺证据只允许进入待核验区。
+  if (mode === "pin2pin") {
+    const pin = candidate.pinComparison;
+    if (pin?.status === "conflict") return { pass: false, reason: `Pin-to-Pin 引脚冲突：${pin.reason}` };
+    if (!scoreResult.pinVerified) return { pass: true, downgrade: "NEEDS_VERIFICATION",
+      reason: pin?.reason || "缺少逐针映射与来源证据，不能判定为直接替代" };
   }
 
   // 国产要求：区分"确认境外"与"归属未知"，后者不武断排除
@@ -145,14 +154,15 @@ function applyProfile(mode, ctx) {
   // 低成本：必须有**真实分销商**报价，AI 估价不得参与正式排名
   if (p.requirePriceKnown) {
     const m = candidate.market;
-    const real = m && m.source === "distributor_api";
+    const quoted = m?.unitPrice ?? m?.priceUSD100 ?? m?.priceUSD1;
+    const real = m && m.source === "distributor_api" && Number.isFinite(Number(quoted));
     if (!real)
       return { pass: true, downgrade: "NEEDS_VERIFICATION",
         reason: m?.source === "ai_estimate"
           ? "低成本模式：仅有 AI 估价，无真实分销商报价，不参与成本排名"
           : "低成本模式：无价格数据，无法比较成本" };
     const proc = ctx.procurement;
-    if (proc?.inStockOnly && !(m.stockQty > 0 || /有货|充足/.test(m.stock || "")))
+    if (proc?.inStockOnly && !(m.stockQty >= (proc.quantity || 1)))
       return { pass: true, downgrade: "NEEDS_VERIFICATION", reason: "低成本模式：该候选当前无现货" };
   }
 

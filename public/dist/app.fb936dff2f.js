@@ -3,7 +3,7 @@ const {
   useEffect,
   useRef
 } = React;
-const APP_VERSION = "6.9.7";
+const APP_VERSION = "7.0.0";
 const C = {
   green: "#1a6c4e",
   greenLight: "#e8f5ef",
@@ -2893,21 +2893,23 @@ function Step3DViewer({
       const useStepColors = distinctColors.size >= 2;
       // side:DoubleSide —— OCCT 网格常有局部反向法线，单面材质从外看那些面是黑的
       const bodyMat = new THREE.MeshStandardMaterial({
-        color: 0x3a3f45,
+        color: 0x2e3237,
         metalness: .05,
-        roughness: .7,
+        roughness: .82,
+        envMapIntensity: .9,
         side: THREE.DoubleSide
       });
       const pinMat = new THREE.MeshStandardMaterial({
-        color: 0xc8ccd2,
-        metalness: .85,
-        roughness: .35,
+        color: 0xd5d8dc,
+        metalness: .9,
+        roughness: .28,
+        envMapIntensity: 1.25,
         side: THREE.DoubleSide
       });
       const edgeMat = new THREE.LineBasicMaterial({
         color: 0x2b2f35,
         transparent: true,
-        opacity: .5
+        opacity: .3
       });
       const drawEdges = triCount < 200000; // 超大模型不画边线，避免线段数爆炸
       for (const part of parts) {
@@ -2920,7 +2922,7 @@ function Step3DViewer({
         }) : isBody ? bodyMat : pinMat;
         group.add(new THREE.Mesh(part.geo, mat));
         // 棱线 —— SamacSys/KiCad 式清晰度的另一半来源：无边线的平面盒会互相糊掉
-        if (drawEdges) group.add(new THREE.LineSegments(new THREE.EdgesGeometry(part.geo, 25), edgeMat));
+        if (drawEdges) group.add(new THREE.LineSegments(new THREE.EdgesGeometry(part.geo, 30), edgeMat));
       }
       const box = new THREE.Box3().setFromObject(group);
       const center = box.getCenter(new THREE.Vector3());
@@ -2929,6 +2931,11 @@ function Step3DViewer({
       scene.add(group);
       // renderer 必须先于环境贴图创建（PMREMGenerator 依赖它）
       const renderer = createRenderer(THREE);
+      // ACES 色调映射：three 默认 NoToneMapping，在 IBL 场景下高光硬截、
+      // 整体发灰发平 —— 这是与 SamacSys 渲染观感差距的主因
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.15;
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setSize(width, height);
       // 画布不随 CSS 拉伸：模糊的另一来源是加载瞬间 clientWidth 偏小（容器还在布局中），
@@ -2951,7 +2958,7 @@ function Step3DViewer({
           console.warn("[3D] 环境贴图生成失败，回退直射光:", e.message);
         }
       }
-      scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f98, envOk ? 0.9 : 1.6));
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f98, envOk ? 1.1 : 1.8));
       const dir = new THREE.DirectionalLight(0xffffff, envOk ? 1.6 : 2.2);
       dir.position.set(1, 1.4, 1);
       scene.add(dir);
@@ -4259,11 +4266,11 @@ function PartDetailModal({
     style: {
       color: C.green
     }
-  }, "$", t.price))))), /*#__PURE__*/React.createElement("td", {
+  }, o.currency || "USD", " ", t.price))))), /*#__PURE__*/React.createElement("td", {
     style: {
       padding: "9px 10px"
     }
-  }, o.leadTimeDays ? `${o.leadTimeDays}天` : "—"), /*#__PURE__*/React.createElement("td", {
+  }, o.leadTime?.days ? `${o.leadTime.days}天${o.leadTime.abnormal ? " ⚠" : ""}` : "—"), /*#__PURE__*/React.createElement("td", {
     style: {
       padding: "9px 10px"
     }
@@ -4892,7 +4899,15 @@ function MarketStrip({
       fontWeight: 600,
       color: C.textSec
     }
-  }, "\uD83D\uDCB0"), m.priceUSD1 != null && /*#__PURE__*/React.createElement("span", {
+  }, "\uD83D\uDCB0"), m.unitPrice != null && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontFamily: "'DM Mono',monospace"
+    }
+  }, m.priceQuantity || 1, "\u7247\u9636\u68AF\u4EF7 ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: C.green
+    }
+  }, m.currency || "USD", " ", m.unitPrice)), m.unitPrice == null && m.priceUSD1 != null && /*#__PURE__*/React.createElement("span", {
     style: {
       fontFamily: "'DM Mono',monospace"
     }
@@ -4900,7 +4915,7 @@ function MarketStrip({
     style: {
       color: C.green
     }
-  }, "$", m.priceUSD1)), m.priceUSD100 != null && /*#__PURE__*/React.createElement("span", {
+  }, "$", m.priceUSD1)), m.unitPrice == null && m.priceUSD100 != null && /*#__PURE__*/React.createElement("span", {
     style: {
       fontFamily: "'DM Mono',monospace"
     }
@@ -5561,7 +5576,8 @@ function Workbench({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          partNumbers: pns
+          partNumbers: pns,
+          procurement
         })
       });
       const d = await r.json().catch(() => null);
@@ -5576,6 +5592,7 @@ function Workbench({
     PIN_EVIDENCE_MISSING: "该模式需要引脚映射证据，当前候选均无法验证引脚",
     PART_UNVERIFIED: "原型号未经权威来源验证，无法推荐",
     VARIANT_NOT_RESOLVED: "未能确定具体订货型号，请先选择封装变体",
+    CONTEXT_INVALID: "分析结果已过期或被修改，请返回后重新分析器件",
     INVALID_REQUEST: "请求参数有误",
     UPSTREAM_TIMEOUT: "上游服务超时",
     UPSTREAM_UNAVAILABLE: "上游服务不可用",
@@ -5604,8 +5621,8 @@ function Workbench({
           constraints,
           priorityOrder: params.map(p => p.id),
           orderSource,
-          procurement: mode === "lowCost" ? procurement : undefined,
-          original: original._dataPath === "demo" ? undefined : original
+          procurement,
+          analysisContext: original._analysisContext || undefined
         })
       });
       clearTimeout(timer);
@@ -6789,12 +6806,16 @@ function App() {
       const ct = r.headers.get("content-type") || "";
       const d = ct.includes("json") ? await r.json().catch(() => null) : null;
       if (r.ok && d && d.success && d.original?.parameters?.length) {
+        const secured = {
+          ...d.original,
+          _analysisContext: d.analysisContext || null
+        };
         if ((d.original.variants || []).length >= 2) {
-          setVariantBase(d.original);
+          setVariantBase(secured);
           setPage("variants");
         } else {
           setOriginal({
-            ...d.original,
+            ...secured,
             _pkgConfirmed: true
           });
           setPage("workbench");
@@ -6853,7 +6874,7 @@ function App() {
       justifyContent: "center"
     }
   }, "\u26A0 \u9875\u9762\u7248\u672C v", APP_VERSION, " \u843D\u540E\u4E8E\u670D\u52A1\u7AEF v", staleVer, "\uFF0C\u90E8\u5206\u4FEE\u590D\u672A\u751F\u6548", /*#__PURE__*/React.createElement("button", {
-    onClick: () => location.reload(true),
+    onClick: () => location.reload(),
     style: {
       padding: "3px 12px",
       borderRadius: 6,
@@ -6950,7 +6971,8 @@ function App() {
         partNumber: v.pn,
         parameters: params,
         variants: [],
-        _pkgConfirmed: true
+        _pkgConfirmed: true,
+        _analysisContext: null
       });
       setPage("workbench");
     },
@@ -6958,7 +6980,8 @@ function App() {
       setOriginal({
         ...variantBase,
         variants: [],
-        _pkgConfirmed: false
+        _pkgConfirmed: false,
+        _analysisContext: null
       });
       setPage("workbench");
     },
