@@ -4,12 +4,15 @@
 // 生产环境务必替换为 Vercel KV / Postgres / Supabase 等持久化存储。
 const { withCors } = require("./_lib/_cors");
 const { cache } = require("./_lib/cache");
+const { guardApi, guardAdmin } = require("./_lib/security");
+const crypto = require("node:crypto");
 
 // 模块级临时存储（非持久！见上方说明）
 const feedbackStore = [];
 
 module.exports = withCors(async (req, res) => {
   if (req.method === "POST") {
+    if (!guardApi(req, res, { cost: 1 })) return;
     const fb = req.body || {};
     if (!fb.originalPart || !fb.candidatePart || !fb.status) {
       res.status(400).json({ error: "缺少必填字段: originalPart, candidatePart, status" }); return;
@@ -17,14 +20,26 @@ module.exports = withCors(async (req, res) => {
     if (!["verified", "partial", "failed", "testing"].includes(fb.status)) {
       res.status(400).json({ error: "status 必须是 verified/partial/failed/testing" }); return;
     }
-    const entry = { id: `fb_${Date.now()}`, ...fb, timestamp: fb.timestamp || new Date().toISOString() };
+    const entry = {
+      id: `fb_${crypto.randomUUID()}`,
+      originalPart: String(fb.originalPart).slice(0, 160),
+      candidatePart: String(fb.candidatePart).slice(0, 160),
+      status: fb.status,
+      projectId: fb.projectId ? String(fb.projectId).slice(0, 160) : null,
+      designRevision: fb.designRevision ? String(fb.designRevision).slice(0, 120) : null,
+      applicationConditions: fb.applicationConditions ? String(fb.applicationConditions).slice(0, 2000) : null,
+      note: fb.note ? String(fb.note).slice(0, 2000) : null,
+      timestamp: new Date().toISOString(),
+    };
     feedbackStore.push(entry);
-    cache.delete(`comp:${fb.candidatePart.toLowerCase()}`);
+    if (feedbackStore.length > 1000) feedbackStore.splice(0, feedbackStore.length - 1000);
+    cache.deletePrefix(`comp:${entry.candidatePart.toLowerCase()}:`);
     res.status(200).json({ success: true, id: entry.id, _note: "Serverless演示存储，重启后丢失，生产请接入Vercel KV" });
     return;
   }
 
   // GET
+  if (!guardAdmin(req, res)) return;
   const { original, candidate } = req.query;
   let results = feedbackStore;
   if (original) results = results.filter(f => f.originalPart.toLowerCase() === String(original).toLowerCase());

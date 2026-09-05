@@ -1,14 +1,27 @@
 // component.js — v2: Improved AI lookup with evidence tracking
 
-const { callGemini, repairJSON, lookupPartSpecs } = require("./gemini");
-const { sameParam } = require("./param-align");
+const { lookupPartSpecs } = require("./gemini");
+const { sameParam, alignParams } = require("./param-align");
+const { getDistributorPart } = require("./distributor");
 
 async function fetchComponentFromAPIs(partNumber, referenceParams = []) {
-  if (process.env.DIGIKEY_CLIENT_ID) {
-    try { /* TODO: DigiKey API */ } catch (e) { console.warn(`[DigiKey] ${partNumber}:`, e.message); }
-  }
-  if (process.env.MOUSER_API_KEY) {
-    try { /* TODO: Mouser API */ } catch (e) { console.warn(`[Mouser] ${partNumber}:`, e.message); }
+  // 候选必须复用 distributor.js 的精确 MPN 守卫。旧实现这里是两个 TODO，
+  // 导致原型号能查分销商、候选却直接退回 AI 记忆。
+  try {
+    const distributor = await getDistributorPart(partNumber);
+    if (distributor?.parameters?.length) {
+      const aligned = alignParams(distributor.parameters, referenceParams, {
+        source: distributor._source || "distributor",
+        sourceLabel: /^digikey/.test(distributor._source || "") ? "DigiKey" : "Mouser",
+        confidence: "high",
+      });
+      const used = new Set(Object.values(aligned).map(x => x.matchedName).filter(Boolean));
+      const extraParams = distributor.parameters.filter(x => !used.has(x.name))
+        .map(x => ({ name: x.name, value: x.value, unit: x.unit || "" })).slice(0, 12);
+      return { ...distributor, parameters: aligned, extraParams };
+    }
+  } catch (e) {
+    console.warn(`[Distributor] ${partNumber}:`, e.message);
   }
   return fetchFromAI(partNumber, referenceParams);
 }

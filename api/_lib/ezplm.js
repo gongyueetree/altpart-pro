@@ -61,6 +61,19 @@ function fileOf(v) {
   return null;
 }
 
+function pinsOf(raw) {
+  const source = Array.isArray(raw?.pins) ? raw.pins
+    : Array.isArray(raw?.pinMap) ? raw.pinMap
+    : Array.isArray(raw?.symbol?.pins) ? raw.symbol.pins : [];
+  return source.map(p => ({
+    number: p?.number ?? p?.pinNumber ?? p?.pin ?? p?.pad,
+    name: p?.name ?? p?.pinName ?? p?.function ?? p?.signal,
+    role: p?.role ?? p?.standardFunction ?? "",
+    type: p?.type ?? p?.electricalType ?? "",
+    description: p?.description ?? "",
+  })).filter(p => p.number != null && p.name).slice(0, 512);
+}
+
 /** 从封装名解析 mm 尺寸，如 MSOP-8_3x3mm_P0.65mm → {w:3,h:3} */
 function sizeFromFootprintName(name) {
   if (!name) return null;
@@ -112,6 +125,7 @@ function mapEzplmPart(raw) {
   }
 
   const size = sizeFromFootprintName(footprint);
+  const pins = pinsOf(raw);
 
   return {
     partNumber: mpn, ezplmId: id, manufacturer, category, description,
@@ -127,6 +141,12 @@ function mapEzplmPart(raw) {
     model3dUrl: stepFile?.url || null,
     model3dFileName: stepFile?.fname || "",
     imageUrl: pickUrl(raw.image) ?? pickUrl(raw.photo),
+    pins,
+    pinEvidence: pins.length ? {
+      source: "ezplm", url: symbolFile?.url || pdfFile?.url || null,
+      documentHash: str(raw.pinDocumentHash) ?? null,
+      verifiedAt: str(raw.pinVerifiedAt) ?? null,
+    } : undefined,
     approved: true,
     _source: "ezplm",
   };

@@ -1,5 +1,15 @@
 # AltPart Pro 升级 Backlog
 
+## v7.0.0 状态更新
+
+已完成：候选分销商精确查询、采购条件传递、数量阶梯价、RuleProfile 权重接入、
+结构化 PinMapComparison、封装几何门槛、签名分析上下文、生命周期 fail-closed、
+逐跳 SSRF 防护、单实例限流/可选鉴权、BOM 新枚举与有界并发。
+
+仍需基础设施后续完成：数据库驱动 Candidate Repository、Redis 全局限流/缓存、
+PostgreSQL 反馈/证据/审核、真正异步 BOM Job、Golden Set、前端 TypeScript 模块化。
+当前内存限流只负责单实例止损，不能替代 Redis 的跨实例配额。
+
 本轮（v5.5 → v6.0）完成情况。**分类严格区分"已实现 / 部分实现 / 未实现 / 因缺凭证未验证"**，
 未做的不写成已做。
 

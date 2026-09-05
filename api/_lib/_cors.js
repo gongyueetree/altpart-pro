@@ -17,7 +17,7 @@ function withCors(handler, allowedMethods = ["GET", "POST"]) {
     res.setHeader("Access-Control-Allow-Origin", resolveOrigin(req));
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key");
 
     if (req.method === "OPTIONS") { res.status(204).end(); return; }
     if (!allowedMethods.includes(req.method)) {

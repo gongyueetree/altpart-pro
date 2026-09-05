@@ -4,11 +4,13 @@
 const { withCors } = require("../_lib/_cors");
 const { getMarketInfo } = require("../_lib/market");
 const { fail, ok, classifyUpstream } = require("../_lib/http");
+const { normalizeProcurement } = require("../_lib/procurement");
+const { guardApi } = require("../_lib/security");
 
 const MAX_BATCH = 8;
 
 module.exports = withCors(async (req, res) => {
-  const { partNumbers } = req.body || {};
+  const { partNumbers, procurement: rawProcurement, manufacturers } = req.body || {};
   if (!Array.isArray(partNumbers) || !partNumbers.length) {
     return fail(res, "BAD_REQUEST", "partNumbers 必须是非空数组");
   }
@@ -18,8 +20,16 @@ module.exports = withCors(async (req, res) => {
       `单次最多查询 ${MAX_BATCH} 个型号，收到 ${partNumbers.length} 个；请分批调用`,
       { details: { max: MAX_BATCH, received: partNumbers.length } });
   }
+  if (!guardApi(req, res, { cost: 2 })) return;
+  let procurement;
+  try { procurement = normalizeProcurement(rawProcurement || {}); }
+  catch (e) { return fail(res, "BAD_REQUEST", e.message); }
   try {
-    const result = await getMarketInfo(partNumbers);
+    const safeManufacturers = manufacturers && typeof manufacturers === "object" && !Array.isArray(manufacturers)
+      ? Object.fromEntries(Object.entries(manufacturers).slice(0, MAX_BATCH)
+        .map(([pn, mfr]) => [String(pn).slice(0, 128), String(mfr || "").slice(0, 128)]))
+      : {};
+    const result = await getMarketInfo(partNumbers, procurement, { manufacturers: safeManufacturers });
     return ok(res, result);
   } catch (e) {
     console.error("[market]", e.message);

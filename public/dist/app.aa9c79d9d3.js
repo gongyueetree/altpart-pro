@@ -3,7 +3,7 @@ const {
   useEffect,
   useRef
 } = React;
-const APP_VERSION = "6.9.7";
+const APP_VERSION = "7.0.0";
 const C = {
   green: "#1a6c4e",
   greenLight: "#e8f5ef",
@@ -750,6 +750,27 @@ const samePin = (a, b) => {
     y = normPin(b);
   return !!x && x === y;
 };
+function bindEcadPin(group, number, label, onPinClick, selected) {
+  const pin = normPin(number);
+  group.setAttribute("class", "ecad-pin");
+  group.setAttribute("data-pin", pin);
+  group.setAttribute("aria-pressed", String(!!selected));
+  if (!onPinClick || !pin) return;
+  group.setAttribute("role", "button");
+  group.setAttribute("tabindex", "0");
+  group.setAttribute("aria-label", label);
+  const fire = e => {
+    e.stopPropagation();
+    onPinClick(pin);
+  };
+  group.addEventListener("click", fire);
+  group.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      fire(e);
+    }
+  });
+}
 
 // ezPLM 的文件 URL（七牛云私有空间）带时效签名且需要鉴权，
 // 浏览器直连会拿到 nginx 的 401 Authorization Required；必须经同源代理取。
@@ -1034,21 +1055,8 @@ function renderFootprintToSvg(txt, svg, onPinClick, selectedPin) {
     });
     shape.setAttribute("fill", sel ? "#006cff" : p.num === "1" ? "#d77b31" : "#d69f36");
     shape.setAttribute("stroke", sel ? "#0047c7" : "#8c6419");
-    shape.setAttribute("stroke-width", sel ? ".22" : ".04");
-    if (sel) {
-      const halo = mk("rect", {
-        x: -p.w / 2 - .22,
-        y: -p.h / 2 - .22,
-        width: p.w + .44,
-        height: p.h + .44,
-        rx: .15,
-        fill: "none",
-        stroke: "#0047c7",
-        "stroke-width": ".08",
-        "stroke-dasharray": ".18 .12"
-      });
-      pg.appendChild(halo);
-    }
+    shape.setAttribute("stroke-width", ".04");
+    shape.setAttribute("data-pin-mark", "pad");
     pg.appendChild(shape);
     const t = mk("text", {
       x: 0,
@@ -1063,19 +1071,7 @@ function renderFootprintToSvg(txt, svg, onPinClick, selectedPin) {
     });
     t.textContent = p.num;
     pg.appendChild(t);
-    if (onPinClick) {
-      pg.setAttribute("role", "button");
-      pg.setAttribute("tabindex", "0");
-      pg.setAttribute("aria-label", `焊盘 ${p.num}`);
-      const fire = e => {
-        e.stopPropagation();
-        onPinClick(normPin(p.num));
-      };
-      pg.addEventListener("click", fire);
-      pg.addEventListener("keydown", e => {
-        if (e.key === "Enter" || e.key === " ") fire(e);
-      });
-    }
+    bindEcadPin(pg, p.num, `焊盘 ${p.num}`, onPinClick, sel);
     g.appendChild(pg);
   });
   const legend = mk("g", {
@@ -1409,7 +1405,8 @@ function renderSymbolToSvg(txt, svg, unit, onPinClick, selectedPin) {
         x2,
         y2,
         stroke: "transparent",
-        "stroke-width": 34
+        "stroke-width": 34,
+        "pointer-events": "stroke"
       }));
       pg.appendChild(mk("line", {
         x1: x,
@@ -1417,7 +1414,8 @@ function renderSymbolToSvg(txt, svg, unit, onPinClick, selectedPin) {
         x2,
         y2,
         stroke: col,
-        "stroke-width": (sel ? 13 : 8) * Math.max(1, 0.5 / scale)
+        "stroke-width": (sel ? 10 : 8) * Math.max(1, 0.5 / scale),
+        "data-pin-mark": "line"
       }));
       pg.appendChild(mk("circle", {
         cx: x,
@@ -1427,10 +1425,7 @@ function renderSymbolToSvg(txt, svg, unit, onPinClick, selectedPin) {
         stroke: col,
         "stroke-width": 3
       }));
-      if (onPinClick) pg.addEventListener("click", e => {
-        e.stopPropagation();
-        onPinClick(num);
-      });
+      bindEcadPin(pg, num, `引脚 ${num}${name && name !== "~" ? " " + name : ""}`, onPinClick, sel);
       g.appendChild(pg);
       const outer = toScreen(x, y),
         inner = toScreen(x2, y2);
@@ -1731,7 +1726,8 @@ function renderKicadSymTo(sym, svg, onPinClick, selPin, unit = 1) {
       x2: ex,
       y2: -ey,
       stroke: "transparent",
-      "stroke-width": 1.2
+      "stroke-width": 1.2,
+      "pointer-events": "stroke"
     }));
     pg.appendChild(mk("line", {
       x1: p.x,
@@ -1739,35 +1735,17 @@ function renderKicadSymTo(sym, svg, onPinClick, selPin, unit = 1) {
       x2: ex,
       y2: -ey,
       stroke: col,
-      "stroke-width": sel ? W * 4 : W
+      "stroke-width": sel ? W * 1.5 : W,
+      "data-pin-mark": "line"
     }));
     pg.appendChild(mk("circle", {
       cx: p.x,
       cy: -p.y,
-      r: sel ? .6 : .35,
-      fill: col
+      r: .35,
+      fill: col,
+      "data-pin-mark": "endpoint"
     }));
-    if (sel) pg.appendChild(mk("circle", {
-      cx: p.x,
-      cy: -p.y,
-      r: 1.1,
-      fill: "none",
-      stroke: "#0047c7",
-      "stroke-width": .18
-    }));
-    if (onPinClick && p.number) {
-      pg.setAttribute("role", "button");
-      pg.setAttribute("tabindex", "0");
-      pg.setAttribute("aria-label", `引脚 ${p.number}${p.name && p.name !== "~" ? " " + p.name : ""}`);
-      const fire = e => {
-        e.stopPropagation();
-        onPinClick(normPin(p.number));
-      };
-      pg.addEventListener("click", fire);
-      pg.addEventListener("keydown", e => {
-        if (e.key === "Enter" || e.key === " ") fire(e);
-      });
-    }
+    bindEcadPin(pg, p.number, `引脚 ${p.number}${p.name && p.name !== "~" ? " " + p.name : ""}`, onPinClick, sel);
     g.appendChild(pg);
     const inX = Math.cos(r),
       inY = -Math.sin(r),
@@ -1790,7 +1768,7 @@ function renderKicadSymTo(sym, svg, onPinClick, selPin, unit = 1) {
         fill: sel ? "#006cff" : "#7a8a80"
       });
       t.textContent = p.number;
-      g.appendChild(t);
+      pg.appendChild(t);
     }
     if (p.name && p.name !== "~") {
       const nx = ex + inX * .8,
@@ -1811,7 +1789,7 @@ function renderKicadSymTo(sym, svg, onPinClick, selPin, unit = 1) {
         fill: sel ? "#006cff" : "#1a2e23"
       });
       t.textContent = p.name;
-      g.appendChild(t);
+      pg.appendChild(t);
     }
   }
   return pins.length;
@@ -2571,6 +2549,22 @@ function EmptyPreview({
 }
 
 // ── SVG 缩放/平移视口（移植自 kicad-part-viewer）──
+// 选中引脚只重绘颜色，保留用户视口；新内容/单元才重新适配。
+function renderEcadPreview(svg, content, unit, draw) {
+  const same = svg._ecadContent === content && svg._ecadUnit === unit;
+  const view = same ? svg.getAttribute("viewBox") : null;
+  const focused = svg.contains(document.activeElement) ? document.activeElement?.getAttribute("data-pin") : null;
+  // legacy/footprint 渲染器使用固定画布，不能把用户缩放后的 viewBox 当作画布尺寸。
+  svg.setAttribute("viewBox", "0 0 800 520");
+  draw();
+  if (view) svg.setAttribute("viewBox", view);
+  attachViewport(svg, !same);
+  svg._ecadContent = content;
+  svg._ecadUnit = unit;
+  if (focused) Array.from(svg.querySelectorAll(".ecad-pin")).find(p => p.getAttribute("data-pin") === focused)?.focus({
+    preventScroll: true
+  });
+}
 function attachViewport(svg, rebase) {
   // base 取渲染器写入的 viewBox（符号是 mm 单位，封装也是），不能硬编码 800x520
   const readVB = () => {
@@ -2618,13 +2612,21 @@ function attachViewport(svg, rebase) {
     };
     apply();
   };
+  const toLocal = (x, y) => {
+    const point = svg.createSVGPoint();
+    point.x = x;
+    point.y = y;
+    return point.matrixTransform(svg.getScreenCTM().inverse());
+  };
   const zoomAt = (f, clientX, clientY) => {
     const r = svg.getBoundingClientRect();
     if (!r.width || !r.height) return;
     const px = clientX == null ? r.left + r.width / 2 : clientX,
       py = clientY == null ? r.top + r.height / 2 : clientY;
-    const ux = view.x + (px - r.left) / r.width * view.w,
-      uy = view.y + (py - r.top) / r.height * view.h;
+    const {
+      x: ux,
+      y: uy
+    } = toLocal(px, py);
     const B = svg._vpBase || base;
     const nw = Math.min(B.w * 8, Math.max(B.w / 20, view.w * f)),
       nh = nw * (B.h / B.w);
@@ -2656,15 +2658,19 @@ function attachViewport(svg, rebase) {
     last = {
       ...down
     };
-    svg.setPointerCapture(pid);
-    svg.style.cursor = "grabbing";
   });
   svg.addEventListener("pointermove", e => {
     if (!dragging || e.pointerId !== pid) return;
-    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) moved = true;
-    const r = svg.getBoundingClientRect();
-    view.x -= (e.clientX - last.x) / r.width * view.w;
-    view.y -= (e.clientY - last.y) / r.height * view.h;
+    if (!moved) {
+      if (Math.hypot(e.clientX - down.x, e.clientY - down.y) <= 5) return;
+      moved = true;
+      svg.setPointerCapture(pid);
+      svg.style.cursor = "grabbing";
+    }
+    const from = toLocal(last.x, last.y),
+      to = toLocal(e.clientX, e.clientY);
+    view.x -= to.x - from.x;
+    view.y -= to.y - from.y;
     last = {
       x: e.clientX,
       y: e.clientY
@@ -2682,6 +2688,17 @@ function attachViewport(svg, rebase) {
   };
   svg.addEventListener("pointerup", stop);
   svg.addEventListener("pointercancel", stop);
+  svg.addEventListener("pointerleave", () => {
+    if (!moved) stop();
+  });
+  // 只有真实拖拽才拦截 click；普通点击必须到达 pin/pad 的监听器。
+  svg.addEventListener("click", e => {
+    if (moved) {
+      e.preventDefault();
+      e.stopPropagation();
+      moved = false;
+    }
+  }, true);
   svg.addEventListener("dblclick", reset);
   svg.style.cursor = "grab";
   svg.style.touchAction = "none";
@@ -2893,21 +2910,23 @@ function Step3DViewer({
       const useStepColors = distinctColors.size >= 2;
       // side:DoubleSide —— OCCT 网格常有局部反向法线，单面材质从外看那些面是黑的
       const bodyMat = new THREE.MeshStandardMaterial({
-        color: 0x3a3f45,
+        color: 0x2e3237,
         metalness: .05,
-        roughness: .7,
+        roughness: .82,
+        envMapIntensity: .9,
         side: THREE.DoubleSide
       });
       const pinMat = new THREE.MeshStandardMaterial({
-        color: 0xc8ccd2,
-        metalness: .85,
-        roughness: .35,
+        color: 0xd5d8dc,
+        metalness: .9,
+        roughness: .28,
+        envMapIntensity: 1.25,
         side: THREE.DoubleSide
       });
       const edgeMat = new THREE.LineBasicMaterial({
         color: 0x2b2f35,
         transparent: true,
-        opacity: .5
+        opacity: .3
       });
       const drawEdges = triCount < 200000; // 超大模型不画边线，避免线段数爆炸
       for (const part of parts) {
@@ -2920,7 +2939,7 @@ function Step3DViewer({
         }) : isBody ? bodyMat : pinMat;
         group.add(new THREE.Mesh(part.geo, mat));
         // 棱线 —— SamacSys/KiCad 式清晰度的另一半来源：无边线的平面盒会互相糊掉
-        if (drawEdges) group.add(new THREE.LineSegments(new THREE.EdgesGeometry(part.geo, 25), edgeMat));
+        if (drawEdges) group.add(new THREE.LineSegments(new THREE.EdgesGeometry(part.geo, 30), edgeMat));
       }
       const box = new THREE.Box3().setFromObject(group);
       const center = box.getCenter(new THREE.Vector3());
@@ -2929,6 +2948,11 @@ function Step3DViewer({
       scene.add(group);
       // renderer 必须先于环境贴图创建（PMREMGenerator 依赖它）
       const renderer = createRenderer(THREE);
+      // ACES 色调映射：three 默认 NoToneMapping，在 IBL 场景下高光硬截、
+      // 整体发灰发平 —— 这是与 SamacSys 渲染观感差距的主因
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.15;
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setSize(width, height);
       // 画布不随 CSS 拉伸：模糊的另一来源是加载瞬间 clientWidth 偏小（容器还在布局中），
@@ -2951,7 +2975,7 @@ function Step3DViewer({
           console.warn("[3D] 环境贴图生成失败，回退直射光:", e.message);
         }
       }
-      scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f98, envOk ? 0.9 : 1.6));
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f98, envOk ? 1.1 : 1.8));
       const dir = new THREE.DirectionalLight(0xffffff, envOk ? 1.6 : 2.2);
       dir.position.set(1, 1.4, 1);
       scene.add(dir);
@@ -3308,25 +3332,21 @@ function GraphicsPanel({
 
   // 三栏小图渲染
   useEffect(() => {
-    if (!loading && fpRef.current && fpText) {
-      renderFootprintToSvg(fpText, fpRef.current, togglePin, pin);
-      attachViewport(fpRef.current, true);
-    }
-  }, [loading, fpText, pin]);
+    if (!loading && fpRef.current && fpText) renderEcadPreview(fpRef.current, fpText, 0, () => renderFootprintToSvg(fpText, fpRef.current, togglePin, pin));
+  }, [loading, fpText, pin, ksym, unit]);
   useEffect(() => {
     if (loading || !symRef.current) return;
-    if (ksym) renderKicadSymTo(ksym, symRef.current, togglePin, pin, unit);else if (symText) renderSymbolToSvg(symText, symRef.current, 1, togglePin, pin);
-    attachViewport(symRef.current, true);
+    renderEcadPreview(symRef.current, ksym || symText, unit, () => {
+      if (ksym) renderKicadSymTo(ksym, symRef.current, togglePin, pin, unit);else if (symText) renderSymbolToSvg(symText, symRef.current, 1, togglePin, pin);
+    });
   }, [loading, symText, ksym, pin, unit]);
   // 放大视图渲染
   useEffect(() => {
-    if (zoomed === "footprint" && bigFpRef.current && fpText) {
-      renderFootprintToSvg(fpText, bigFpRef.current, togglePin, pin);
-      attachViewport(bigFpRef.current, true);
-    }
+    if (zoomed === "footprint" && bigFpRef.current && fpText) renderEcadPreview(bigFpRef.current, fpText, 0, () => renderFootprintToSvg(fpText, bigFpRef.current, togglePin, pin));
     if (zoomed === "symbol" && bigSymRef.current) {
-      if (ksym) renderKicadSymTo(ksym, bigSymRef.current, togglePin, pin, unit);else if (symText) renderSymbolToSvg(symText, bigSymRef.current, 1, togglePin, pin);
-      attachViewport(bigSymRef.current, true);
+      renderEcadPreview(bigSymRef.current, ksym || symText, unit, () => {
+        if (ksym) renderKicadSymTo(ksym, bigSymRef.current, togglePin, pin, unit);else if (symText) renderSymbolToSvg(symText, bigSymRef.current, 1, togglePin, pin);
+      });
     }
   }, [zoomed, fpText, symText, ksym, pin, unit]);
   const tryAiPinout = async () => {
@@ -4259,11 +4279,11 @@ function PartDetailModal({
     style: {
       color: C.green
     }
-  }, "$", t.price))))), /*#__PURE__*/React.createElement("td", {
+  }, o.currency || "USD", " ", t.price))))), /*#__PURE__*/React.createElement("td", {
     style: {
       padding: "9px 10px"
     }
-  }, o.leadTimeDays ? `${o.leadTimeDays}天` : "—"), /*#__PURE__*/React.createElement("td", {
+  }, o.leadTime?.days ? `${o.leadTime.days}天${o.leadTime.abnormal ? " ⚠" : ""}` : "—"), /*#__PURE__*/React.createElement("td", {
     style: {
       padding: "9px 10px"
     }
@@ -4892,7 +4912,15 @@ function MarketStrip({
       fontWeight: 600,
       color: C.textSec
     }
-  }, "\uD83D\uDCB0"), m.priceUSD1 != null && /*#__PURE__*/React.createElement("span", {
+  }, "\uD83D\uDCB0"), m.unitPrice != null && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontFamily: "'DM Mono',monospace"
+    }
+  }, m.priceQuantity || 1, "\u7247\u9636\u68AF\u4EF7 ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: C.green
+    }
+  }, m.currency || "USD", " ", m.unitPrice)), m.unitPrice == null && m.priceUSD1 != null && /*#__PURE__*/React.createElement("span", {
     style: {
       fontFamily: "'DM Mono',monospace"
     }
@@ -4900,7 +4928,7 @@ function MarketStrip({
     style: {
       color: C.green
     }
-  }, "$", m.priceUSD1)), m.priceUSD100 != null && /*#__PURE__*/React.createElement("span", {
+  }, "$", m.priceUSD1)), m.unitPrice == null && m.priceUSD100 != null && /*#__PURE__*/React.createElement("span", {
     style: {
       fontFamily: "'DM Mono',monospace"
     }
@@ -5561,7 +5589,8 @@ function Workbench({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          partNumbers: pns
+          partNumbers: pns,
+          procurement
         })
       });
       const d = await r.json().catch(() => null);
@@ -5576,6 +5605,7 @@ function Workbench({
     PIN_EVIDENCE_MISSING: "该模式需要引脚映射证据，当前候选均无法验证引脚",
     PART_UNVERIFIED: "原型号未经权威来源验证，无法推荐",
     VARIANT_NOT_RESOLVED: "未能确定具体订货型号，请先选择封装变体",
+    CONTEXT_INVALID: "分析结果已过期或被修改，请返回后重新分析器件",
     INVALID_REQUEST: "请求参数有误",
     UPSTREAM_TIMEOUT: "上游服务超时",
     UPSTREAM_UNAVAILABLE: "上游服务不可用",
@@ -5604,8 +5634,8 @@ function Workbench({
           constraints,
           priorityOrder: params.map(p => p.id),
           orderSource,
-          procurement: mode === "lowCost" ? procurement : undefined,
-          original: original._dataPath === "demo" ? undefined : original
+          procurement,
+          analysisContext: original._analysisContext || undefined
         })
       });
       clearTimeout(timer);
@@ -6789,12 +6819,16 @@ function App() {
       const ct = r.headers.get("content-type") || "";
       const d = ct.includes("json") ? await r.json().catch(() => null) : null;
       if (r.ok && d && d.success && d.original?.parameters?.length) {
+        const secured = {
+          ...d.original,
+          _analysisContext: d.analysisContext || null
+        };
         if ((d.original.variants || []).length >= 2) {
-          setVariantBase(d.original);
+          setVariantBase(secured);
           setPage("variants");
         } else {
           setOriginal({
-            ...d.original,
+            ...secured,
             _pkgConfirmed: true
           });
           setPage("workbench");
@@ -6853,7 +6887,7 @@ function App() {
       justifyContent: "center"
     }
   }, "\u26A0 \u9875\u9762\u7248\u672C v", APP_VERSION, " \u843D\u540E\u4E8E\u670D\u52A1\u7AEF v", staleVer, "\uFF0C\u90E8\u5206\u4FEE\u590D\u672A\u751F\u6548", /*#__PURE__*/React.createElement("button", {
-    onClick: () => location.reload(true),
+    onClick: () => location.reload(),
     style: {
       padding: "3px 12px",
       borderRadius: 6,
@@ -6950,7 +6984,8 @@ function App() {
         partNumber: v.pn,
         parameters: params,
         variants: [],
-        _pkgConfirmed: true
+        _pkgConfirmed: true,
+        _analysisContext: null
       });
       setPage("workbench");
     },
@@ -6958,7 +6993,8 @@ function App() {
       setOriginal({
         ...variantBase,
         variants: [],
-        _pkgConfirmed: false
+        _pkgConfirmed: false,
+        _analysisContext: null
       });
       setPage("workbench");
     },

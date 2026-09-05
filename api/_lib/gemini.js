@@ -188,7 +188,7 @@ variants 规则：如果输入是不含封装/温度后缀的基础型号（如 
 }
 
 // ─── 候选发现（场景 + 数量可配）───
-async function getCandidates(part, category, params, mfrs, mode, scenario, count = 10, appHint = "") {
+async function getCandidates(part, category, params, mfrs, mode, scenario, count = 10, appHint = "", procurement) {
   const modeDesc = { pin2pin:"严格 pin-to-pin", pkgCompat:"封装兼容", funcCompat:"功能兼容",
     domestic:"国产替代优先", lowCost:"低成本优先" }[mode] || "功能兼容";
   const mfrNote = mfrs?.length ? `\n优选厂商：${mfrs.join(",")}` : "";
@@ -220,10 +220,13 @@ ${scenarioHint ? "替代目的：" + scenarioHint : ""}
 candidates 给 ${count} 个真实型号（系统会再校验筛选，宁多勿缺）。eliminated 最多 3 个。
 ⚠ 严禁把原型号本身或其封装/温度变体（同一芯片不同后缀）列入 candidates —— 必须是不同的芯片型号。`;
 
+  const procurementNote = mode === "lowCost" && procurement
+    ? `\n采购条件：地区 ${procurement.region || "US"}，数量 ${procurement.quantity || 100}，包装 ${procurement.packaging || "any"}，币种 ${procurement.currency || "USD"}${procurement.inStockOnly ? "，仅考虑有现货" : ""}。候选仍须由系统用真实分销商报价验证。`
+    : "";
   const prompt = `原始器件：${part.partNumber}（${category}，${part.manufacturer}）
 关键参数（按用户优先级排序）：
 ${keyParams}
-替代模式：${modeDesc}${mfrNote}${priorityNote}
+替代模式：${modeDesc}${mfrNote}${priorityNote}${procurementNote}
 请给出 ${count} 个候选替代型号。`;
 
   // 候选发现不需要联网搜索（靠模型知识即可，更快），关闭 google_search 避免超时

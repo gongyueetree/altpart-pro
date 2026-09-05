@@ -3,10 +3,13 @@
 const { withCors } = require("../_lib/_cors");
 const { resolveOriginalPart } = require("../_lib/pipeline");
 const { fail, ok } = require("../_lib/http");
+const { signAnalysisContext } = require("../_lib/analysis-context");
+const { guardApi } = require("../_lib/security");
 
 module.exports = withCors(async (req, res) => {
   const { partNumber } = req.body || {};
   if (!partNumber) { res.status(400).json({ error: "partNumber required" }); return; }
+  if (!guardApi(req, res, { cost: 3 })) return;
 
   try {
     const original = await resolveOriginalPart(partNumber.trim());
@@ -28,7 +31,10 @@ module.exports = withCors(async (req, res) => {
         },
       });
     }
-    return ok(res, { original });
+    const analysisContext = signAnalysisContext(original, original.partNumber);
+    return ok(res, { original, analysisContext,
+      contextExpiresInSeconds: analysisContext ? require("../_lib/analysis-context").MAX_AGE_SECONDS : null,
+      contextWarning: analysisContext ? undefined : "ANALYSIS_CONTEXT_SECRET 未配置；推荐时将重新查询原器件，不信任客户端回传参数" });
   } catch (e) {
     console.error("[analyze] failed:", e.message);
     return fail(res, "INTERNAL", e.message || "器件参数解析失败");

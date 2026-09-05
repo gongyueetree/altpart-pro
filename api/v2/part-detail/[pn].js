@@ -1,16 +1,19 @@
 // GET /api/v2/part-detail/:pn — 器件详情（ezPLM参数/参考设计/可下载资源 + 实时行情）
 const { withCors } = require("../../_lib/_cors");
 const { queryPartDetail } = require("../../_lib/ezplm");
-const { getMarketInfo } = require("../../_lib/market");
+const { getMarketInfo, buildManufacturerHints } = require("../../_lib/market");
+const { guardApi } = require("../../_lib/security");
 
 module.exports = withCors(async (req, res) => {
   const pn = req.query.pn;
   if (!pn) { res.status(400).json({ error: "partNumber required" }); return; }
+  if (!guardApi(req, res, { cost: 2 })) return;
 
-  const [detail, market] = await Promise.all([
-    queryPartDetail(pn).catch(() => null),
-    getMarketInfo([pn]).catch(() => ({ parts: {} })),
-  ]);
+  const detail = await queryPartDetail(pn).catch(() => null);
+  const market = await getMarketInfo(
+    [pn], {},
+    { manufacturers: buildManufacturerHints(detail ? [detail] : []) },
+  ).catch(() => ({ parts: {} }));
   const m = market.parts?.[pn] || null;
 
   if (!detail) {

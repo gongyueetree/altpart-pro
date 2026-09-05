@@ -8,6 +8,7 @@
 // 目的：几何与结构由确定性程序负责，LLM 只补语义，避免整份 PDF 交给模型产生幻觉。
 
 const { cache } = require("./cache");
+const { fetchWithSafeRedirects, readResponseBuffer } = require("./safe-fetch");
 const TTL = 30 * 86400;
 const MAX_PDF_BYTES = 18 * 1024 * 1024;
 
@@ -41,15 +42,14 @@ function getPdfAssets() {
 
 /** 下载 PDF（限制大小与协议，避免 SSRF 与超大文件） */
 async function fetchPdf(url) {
-  let u;
-  try { u = new URL(url); } catch { throw new Error("PDF 地址不合法"); }
-  if (!/^https?:$/.test(u.protocol)) throw new Error("仅支持 http/https");
-  const r = await fetch(u.toString(), { redirect: "follow", signal: AbortSignal.timeout(25000) });
+  const { response: r } = await fetchWithSafeRedirects(url, {
+    maxRedirects: 3,
+    fetchOptions: { signal: AbortSignal.timeout(25000) },
+  });
   if (!r.ok) throw new Error(`下载 PDF 失败 (HTTP ${r.status})`);
-  const len = Number(r.headers.get("content-length") || 0);
-  if (len && len > MAX_PDF_BYTES) throw new Error(`PDF 超过 ${MAX_PDF_BYTES / 1048576}MB 限制`);
-  const buf = new Uint8Array(await r.arrayBuffer());
-  if (buf.byteLength > MAX_PDF_BYTES) throw new Error("PDF 过大");
+  const ct = String(r.headers.get("content-type") || "").toLowerCase();
+  if (ct && !/application\/pdf|application\/octet-stream/.test(ct)) throw new Error(`返回内容类型不是 PDF (${ct})`);
+  const buf = new Uint8Array(await readResponseBuffer(r, MAX_PDF_BYTES));
   if (String.fromCharCode(...buf.slice(0, 4)) !== "%PDF") throw new Error("返回内容不是 PDF");
   return buf;
 }
@@ -203,4 +203,4 @@ async function extractPinsFromPdf(pdfUrl, expectedPins) {
   return result;
 }
 
-module.exports = { extractPinsFromPdf, parsePdf, parsePinLines, parsePinConfigFigure, findPinPages };
+module.exports = { extractPinsFromPdf, parsePdf, parsePinLines, parsePinConfigFigure, findPinPages, fetchPdf };

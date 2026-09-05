@@ -9,6 +9,10 @@
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 button,input{outline:none;font-family:inherit}
+/* SVG 的原生 focus outline 会随 mm 坐标放大；焦点只标记实际引脚。 */
+.ecad-pin:focus{outline:none}
+.ecad-pin:focus-visible [data-pin-mark]{stroke:#006cff}
+.ecad-pin:focus-visible text{text-decoration:underline}
 body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;color:#1a2e23}
 @keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -24,6 +28,6 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <div id="root"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="./dist/app.324e4485a7.js"></script>
+<script src="./dist/app.aa9c79d9d3.js"></script>
 </body>
 </html>

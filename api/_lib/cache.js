@@ -26,6 +26,11 @@ const cache = {
     store.set(key, { value, expiry: Date.now() + ttlSeconds * 1000 });
   },
   delete(key) { store.delete(key); },
+  deletePrefix(prefix) {
+    let count = 0;
+    for (const key of store.keys()) if (String(key).startsWith(prefix)) { store.delete(key); count++; }
+    return count;
+  },
   clear() { store.clear(); },
   stats() {
     let valid = 0, expired = 0; const now = Date.now();

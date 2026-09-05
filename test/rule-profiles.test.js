@@ -7,14 +7,28 @@ const original = { parameters: [
   { id: "price", name: "参考价格", nameEn: "Price", value: "0.25", unit: "USD" },
 ]};
 const mk = (pkgScore, pkgVal, extra = {}) => ({
-  original,
-  candidate: { manufacturer: extra.mfr || "Texas Instruments", parameters: { pkg: { value: pkgVal } }, market: extra.market },
-  scoreResult: { evidenceCoverage: extra.cov ?? 80,
+  original: extra.originalPackage
+    ? { ...original, parameters: original.parameters.map(p => p.id === "pkg" ? { ...p, value: extra.originalPackage } : p) }
+    : original,
+  candidate: { manufacturer: extra.mfr || "Texas Instruments", parameters: { pkg: { value: pkgVal } },
+    market: extra.market, pinComparison: extra.pinComparison },
+  scoreResult: { evidenceCoverage: extra.cov ?? 80, pinVerified: extra.pinVerified === true,
     paramScores: [{ paramId: "pkg", known: pkgVal !== "N/A", score: pkgScore }] },
 });
 
 test("Pin-to-Pin：封装必须完全一致", async t => {
-  await t.test("同封装通过", () => assert.equal(applyProfile("pin2pin", mk(100, "SOIC-8")).pass, true));
+  await t.test("完整 footprint 与逐针证据都一致时通过", () => {
+    const footprint = "SOIC-8_3.9x4.9mm_P1.27mm";
+    const r = applyProfile("pin2pin", mk(100, footprint, {
+      originalPackage: footprint, pinVerified: true,
+      pinComparison: { status: "verified", verified: true },
+    }));
+    assert.equal(r.pass, true); assert.equal(r.downgrade, undefined);
+  });
+  await t.test("只有 SOIC-8 家族名不能证明直接替代", () => {
+    const r = applyProfile("pin2pin", mk(100, "SOIC-8", { pinVerified: true }));
+    assert.equal(r.pass, false); assert.match(r.reason, /几何|land pattern/);
+  });
   await t.test("兼容族被拒绝", () => {
     const r = applyProfile("pin2pin", mk(80, "SOP-8"));
     assert.equal(r.pass, false); assert.match(r.reason, /封装完全一致/);
@@ -72,7 +86,9 @@ test("低成本：只认真实分销商报价", async t => {
 
 test("证据覆盖率下限", async t => {
   await t.test("pin2pin 覆盖率不足 → 降级", () => {
-    const r = applyProfile("pin2pin", mk(100, "SOIC-8", { cov: 30 }));
+    const footprint = "SOIC-8_3.9x4.9mm_P1.27mm";
+    const r = applyProfile("pin2pin", mk(100, footprint,
+      { cov: 30, originalPackage: footprint, pinVerified: true, pinComparison: { status: "verified" } }));
     assert.equal(r.downgrade, "NEEDS_VERIFICATION");
   });
   await t.test("funcCompat 覆盖率足够 → 通过", () =>

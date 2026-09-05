@@ -5,18 +5,37 @@ const { withCors } = require("../_lib/_cors");
 const { runPipeline } = require("../_lib/pipeline");
 const { bizFail, ok, requestId, classifyUpstream } = require("../_lib/http");
 const { PROFILES } = require("../_lib/rule-profiles");
+const { normalizeProcurement } = require("../_lib/procurement");
+const { verifyAnalysisContext } = require("../_lib/analysis-context");
+const { guardApi } = require("../_lib/security");
 
 module.exports = withCors(async (req, res) => {
   const rid = requestId();
   const t0 = Date.now();
   const { partNumber, mode = "funcCompat", scenario, application = "generic",
-          preferredManufacturers, constraints, priorityOrder, original } = req.body || {};
+          preferredManufacturers, constraints, priorityOrder, original,
+          procurement: rawProcurement, analysisContext } = req.body || {};
 
   if (!partNumber || typeof partNumber !== "string")
     return bizFail(res, "INVALID_REQUEST", "partNumber 必填且须为字符串", { requestId: rid, stage: "validate" });
   if (mode && !PROFILES[mode])
     return bizFail(res, "INVALID_REQUEST", `未知替代模式：${mode}`, { requestId: rid, stage: "validate",
       details: { allowed: Object.keys(PROFILES) } });
+  if (!guardApi(req, res, { cost: 10 })) return;
+
+  let procurement;
+  try { procurement = normalizeProcurement(rawProcurement || {}); }
+  catch (e) { return bizFail(res, "INVALID_REQUEST", e.message, { requestId: rid, stage: "validate" }); }
+
+  // 客户端回传 original 仅可用于更严格地拒绝，绝不能作为评分事实来源。
+  // 正常两段式流程使用服务端签名的 analysisContext；无 token 时重新查权威数据。
+  let trustedOriginal;
+  if (analysisContext) {
+    const verified = verifyAnalysisContext(analysisContext, partNumber);
+    if (!verified.valid) return bizFail(res, "CONTEXT_INVALID", verified.message,
+      { requestId: rid, stage: "identity", details: { reason: verified.code } });
+    trustedOriginal = verified.original;
+  }
 
   // 原器件必须已通过存在性验证；未验证型号不得消耗推荐配额
   if (original && (original.unverified || original.fictitious))
@@ -24,10 +43,10 @@ module.exports = withCors(async (req, res) => {
       { requestId: rid, stage: "identity" });
 
   // 约束合法性：非法约束不得进入评分（线上曾接受 min=6 / max=4）
-  if (constraints && typeof constraints === "object" && original?.parameters) {
+  if (constraints && typeof constraints === "object" && trustedOriginal?.parameters) {
     const { validateConstraint } = require("../_lib/scoring-node");
     for (const [pid, con] of Object.entries(constraints)) {
-      const param = (original.parameters || []).find(p => p.id === pid);
+      const param = (trustedOriginal.parameters || []).find(p => p.id === pid);
       const v = validateConstraint(con, param);
       if (!v.valid)
         return bizFail(res, "INVALID_REQUEST", v.error,
@@ -48,7 +67,7 @@ module.exports = withCors(async (req, res) => {
       partNumber, mode, scenario, application,
       preferredManufacturers: cleanMfrs,
       constraints: constraints || {},
-      priorityOrder, originalData: original,
+      priorityOrder, originalData: trustedOriginal, procurement,
       onProgress: msg => mark("progress", { msg }),
     });
     mark("scored", { candidates: result.recommendations?.length || 0,
@@ -85,14 +104,16 @@ module.exports = withCors(async (req, res) => {
 
     // 附加市场行情与成本差异（失败不影响推荐主体）
     try {
-      const { getMarketInfo } = require("../_lib/market");
+      const { getMarketInfo, buildManufacturerHints } = require("../_lib/market");
       const pns = [partNumber, ...result.recommendations.map(r => r.partNumber)].slice(0, 8);
-      const mk = await getMarketInfo(pns);
-      const base = mk.parts?.[partNumber]?.priceUSD100 ?? mk.parts?.[partNumber]?.priceUSD1 ?? null;
+      const marketParts = [result.original, ...result.recommendations];
+      const mk = await getMarketInfo(pns, procurement,
+        { manufacturers: buildManufacturerHints(marketParts) });
+      const base = mk.parts?.[partNumber]?.unitPrice ?? mk.parts?.[partNumber]?.priceUSD100 ?? mk.parts?.[partNumber]?.priceUSD1 ?? null;
       result.market = mk.parts; result.basePrice = base;
       result.recommendations = result.recommendations.map(r => {
         const m = mk.parts?.[r.partNumber];
-        const p = m?.priceUSD100 ?? m?.priceUSD1 ?? null;
+        const p = m?.unitPrice ?? m?.priceUSD100 ?? m?.priceUSD1 ?? null;
         const costDelta = base != null && p != null ? +(p - base).toFixed(4) : null;
         return { ...r, market: m || null, costDelta,
           costDeltaPct: costDelta != null && base > 0 ? +((costDelta / base) * 100).toFixed(1) : null };
@@ -106,6 +127,9 @@ module.exports = withCors(async (req, res) => {
     return ok(res, { ...result, requestId: rid, timings: stages, totalMs: Date.now() - t0 });
   } catch (e) {
     console.error(`[recommend][${rid}]`, e.message);
+
+    if (e.invalidRequest) return bizFail(res, "INVALID_REQUEST", e.message,
+      { requestId: rid, stage: "validate", diagnostics: { stages, totalMs: Date.now() - t0 } });
 
     // 候选全部查不到数据是业务结果，不是系统故障 —— 必须给出可操作说明，
     // 否则用户看到的是「服务内部错误·可重试」，重试多少次都一样。

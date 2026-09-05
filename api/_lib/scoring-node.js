@@ -9,7 +9,7 @@
 //  4. 带测试条件的参数（Rds(on)@Vgs）条件不同时不直接比较
 
 const { toQuantityIR, comparable, conditionMatch } = require("./quantity");
-const { semanticsOf, PKG_COMPAT, pkgFamily } = require("./comparison-semantics");
+const { semanticsOf, comparePackage } = require("./comparison-semantics");
 
 /**
  * 约束合法性校验（后端必须再校验一次，不能只信前端）
@@ -158,13 +158,21 @@ function compareParam(origParam, candRaw, candMeta = {}) {
       break;
     }
     case "compatible_set": {
-      const av = pkgFamily(a.text ?? a.rawValue), bv = pkgFamily(b.text ?? b.rawValue);
-      if (!av) { out = { score: 60, comment: "原型号未标注", known: true }; break; }
-      if (av === bv) { out = { score: 100, comment: "一致", known: true }; break; }
-      const compat = PKG_COMPAT[String(a.rawValue).trim()] || PKG_COMPAT[av] || [];
-      if (compat.some(c => bv.includes(pkgFamily(c)))) { out = { score: 80, comment: "同兼容族(引脚待核)", known: true }; break; }
-      if (av.includes(bv) || bv.includes(av)) { out = { score: 70, comment: "疑似兼容(需确认)", known: true }; break; }
-      out = { score: 12, comment: "不兼容", known: true };
+      if (!/封装|package|footprint|case/i.test(`${name} ${nameEn}`)) {
+        const av = String(a.text ?? a.rawValue ?? "").trim().toLowerCase();
+        const bv = String(b.text ?? b.rawValue ?? "").trim().toLowerCase();
+        out = av === bv
+          ? { score: 100, comment: "一致", known: true }
+          : (av.includes(bv) || bv.includes(av))
+            ? { score: 80, comment: "接口集合部分兼容，需核对", known: true }
+            : { score: 12, comment: "接口不兼容", known: true };
+        break;
+      }
+      const pkg = comparePackage(a.text ?? a.rawValue, b.text ?? b.rawValue);
+      if (!pkg.known) { out = { score: 60, comment: "封装信息不足", known: true, packageComparison: pkg }; break; }
+      if (pkg.exact) { out = { score: 100, comment: pkg.reason, known: true, packageComparison: pkg }; break; }
+      if (pkg.compatible) { out = { score: 80, comment: pkg.reason, known: true, packageComparison: pkg }; break; }
+      out = { score: 12, comment: pkg.reason || "不兼容", known: true, packageComparison: pkg };
       break;
     }
     case "boolean": {
@@ -220,7 +228,7 @@ function calculateScore(originalParams, candidate, priorityOrder, constraints = 
   priorityOrder.forEach((paramId, index) => {
     const origP = originalParams.find(p => p.id === paramId);
     if (!origP) return;
-    const weight = priorityOrder.length - index;
+    const weight = Number(opts.weights?.[paramId]) || (priorityOrder.length - index);
     const cv = candidate.parameters?.[paramId];
     const res = compareParam(origP, cv?.value, cv || {});
 

@@ -2,7 +2,7 @@
 
 > 元器件替代决策智能体 · ezPLM 集成 · 实时行情 · 场景化替代
 
-**v3.0** | 前身为 AltPart AI v2.4（旧仓库 eehubio/altpart，已停用）
+**v7.0.0** | 前身为 AltPart AI v2.4（旧仓库 eehubio/altpart，已停用）
 
 ---
 
@@ -15,7 +15,10 @@
 | **场景化替代** | 9 种应用领域，同一器件在不同场景下推荐不同替代料 |
 | **成本差异** | 每个候选相对原型号的价差与百分比 |
 | **确定性评分** | 技术兼容度 × 证据覆盖率 × 来源可信度，AI 数据显著降权 |
-| **引脚证据门槛** | 无引脚验证不标"可直接替换"，只标 P2 候选 |
+| **引脚证据门槛** | 只有权威来源的结构化逐针映射一致，才允许标记“直接替代” |
+| **封装几何门槛** | Pin-to-Pin 同时校验本体尺寸、间距、散热焊盘等几何，不只比较封装家族名 |
+| **采购条件生效** | 地区、数量、包装、币种、现货条件进入报价、缓存、门槛和排序 |
+| **安全边界** | 签名分析上下文、API 限流/可选鉴权、逐跳 SSRF 防护、资源限长读取 |
 
 ## 快速开始
 
@@ -34,6 +37,12 @@ vercel dev                    # http://localhost:3000
 | `EZPLM_API_KEY` | 推荐 | ezPLM 元器件库（服务端持有，勿加 VITE_ 前缀） |
 | `DIGIKEY_CLIENT_ID` / `_SECRET` | | 实时价格库存 |
 | `MOUSER_API_KEY` | | 实时价格库存 |
+| `ANALYSIS_CONTEXT_SECRET` | 生产必填 | 至少 32 字节；签名 `/analyze` 结果，防止客户端篡改参数后评分 |
+| `ALTPART_REQUIRE_AUTH` | | `true` 时所有高成本接口要求 API Key |
+| `ALTPART_API_KEYS` | | 逗号分隔的服务端 API Key；也用于按 Key 限流 |
+| `ALTPART_ADMIN_API_KEYS` | | 管理员 Key；读取反馈记录时必需 |
+| `ALTPART_RATE_LIMIT` | | 单实例每分钟成本点数，默认 60（推荐一次计 10） |
+| `ALLOWED_ORIGINS` | 推荐 | 允许调用 API 的前端 Origin，逗号分隔 |
 
 配置后需 **Redeploy** 生效。验证：访问 `/api/ezplm?path=status` 应返回 `{"configured":true}`。
 
@@ -44,7 +53,7 @@ vercel dev                    # http://localhost:3000
   → /api/v2/analyze     ezPLM 查参数（未收录则 Gemini 联网搜索）
   → [封装变体确认]       基础型号先选具体订货号
   → 工作台               选应用领域 / 拖拽参数优先级 / 设约束 / 选替代模式
-  → /api/v2/recommend   AI 推 10 个 → ezPLM 校验 → 评分淘汰 → Top5 + 成本差异
+  → /api/v2/recommend   AI 推 10 个 → ezPLM/分销商精确校验 → 硬门槛 → 加权评分 → Top5 + 数量阶梯价
   → 点击型号             /api/v2/part-detail 规格/报价/下载/参考设计
 ```
 
