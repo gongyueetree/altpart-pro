@@ -750,6 +750,27 @@ const samePin = (a, b) => {
     y = normPin(b);
   return !!x && x === y;
 };
+function bindEcadPin(group, number, label, onPinClick, selected) {
+  const pin = normPin(number);
+  group.setAttribute("class", "ecad-pin");
+  group.setAttribute("data-pin", pin);
+  group.setAttribute("aria-pressed", String(!!selected));
+  if (!onPinClick || !pin) return;
+  group.setAttribute("role", "button");
+  group.setAttribute("tabindex", "0");
+  group.setAttribute("aria-label", label);
+  const fire = e => {
+    e.stopPropagation();
+    onPinClick(pin);
+  };
+  group.addEventListener("click", fire);
+  group.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      fire(e);
+    }
+  });
+}
 
 // ezPLM 的文件 URL（七牛云私有空间）带时效签名且需要鉴权，
 // 浏览器直连会拿到 nginx 的 401 Authorization Required；必须经同源代理取。
@@ -1034,21 +1055,8 @@ function renderFootprintToSvg(txt, svg, onPinClick, selectedPin) {
     });
     shape.setAttribute("fill", sel ? "#006cff" : p.num === "1" ? "#d77b31" : "#d69f36");
     shape.setAttribute("stroke", sel ? "#0047c7" : "#8c6419");
-    shape.setAttribute("stroke-width", sel ? ".22" : ".04");
-    if (sel) {
-      const halo = mk("rect", {
-        x: -p.w / 2 - .22,
-        y: -p.h / 2 - .22,
-        width: p.w + .44,
-        height: p.h + .44,
-        rx: .15,
-        fill: "none",
-        stroke: "#0047c7",
-        "stroke-width": ".08",
-        "stroke-dasharray": ".18 .12"
-      });
-      pg.appendChild(halo);
-    }
+    shape.setAttribute("stroke-width", ".04");
+    shape.setAttribute("data-pin-mark", "pad");
     pg.appendChild(shape);
     const t = mk("text", {
       x: 0,
@@ -1063,19 +1071,7 @@ function renderFootprintToSvg(txt, svg, onPinClick, selectedPin) {
     });
     t.textContent = p.num;
     pg.appendChild(t);
-    if (onPinClick) {
-      pg.setAttribute("role", "button");
-      pg.setAttribute("tabindex", "0");
-      pg.setAttribute("aria-label", `焊盘 ${p.num}`);
-      const fire = e => {
-        e.stopPropagation();
-        onPinClick(normPin(p.num));
-      };
-      pg.addEventListener("click", fire);
-      pg.addEventListener("keydown", e => {
-        if (e.key === "Enter" || e.key === " ") fire(e);
-      });
-    }
+    bindEcadPin(pg, p.num, `焊盘 ${p.num}`, onPinClick, sel);
     g.appendChild(pg);
   });
   const legend = mk("g", {
@@ -1409,7 +1405,8 @@ function renderSymbolToSvg(txt, svg, unit, onPinClick, selectedPin) {
         x2,
         y2,
         stroke: "transparent",
-        "stroke-width": 34
+        "stroke-width": 34,
+        "pointer-events": "stroke"
       }));
       pg.appendChild(mk("line", {
         x1: x,
@@ -1417,7 +1414,8 @@ function renderSymbolToSvg(txt, svg, unit, onPinClick, selectedPin) {
         x2,
         y2,
         stroke: col,
-        "stroke-width": (sel ? 13 : 8) * Math.max(1, 0.5 / scale)
+        "stroke-width": (sel ? 10 : 8) * Math.max(1, 0.5 / scale),
+        "data-pin-mark": "line"
       }));
       pg.appendChild(mk("circle", {
         cx: x,
@@ -1427,10 +1425,7 @@ function renderSymbolToSvg(txt, svg, unit, onPinClick, selectedPin) {
         stroke: col,
         "stroke-width": 3
       }));
-      if (onPinClick) pg.addEventListener("click", e => {
-        e.stopPropagation();
-        onPinClick(num);
-      });
+      bindEcadPin(pg, num, `引脚 ${num}${name && name !== "~" ? " " + name : ""}`, onPinClick, sel);
       g.appendChild(pg);
       const outer = toScreen(x, y),
         inner = toScreen(x2, y2);
@@ -1731,7 +1726,8 @@ function renderKicadSymTo(sym, svg, onPinClick, selPin, unit = 1) {
       x2: ex,
       y2: -ey,
       stroke: "transparent",
-      "stroke-width": 1.2
+      "stroke-width": 1.2,
+      "pointer-events": "stroke"
     }));
     pg.appendChild(mk("line", {
       x1: p.x,
@@ -1739,35 +1735,17 @@ function renderKicadSymTo(sym, svg, onPinClick, selPin, unit = 1) {
       x2: ex,
       y2: -ey,
       stroke: col,
-      "stroke-width": sel ? W * 4 : W
+      "stroke-width": sel ? W * 1.5 : W,
+      "data-pin-mark": "line"
     }));
     pg.appendChild(mk("circle", {
       cx: p.x,
       cy: -p.y,
-      r: sel ? .6 : .35,
-      fill: col
+      r: .35,
+      fill: col,
+      "data-pin-mark": "endpoint"
     }));
-    if (sel) pg.appendChild(mk("circle", {
-      cx: p.x,
-      cy: -p.y,
-      r: 1.1,
-      fill: "none",
-      stroke: "#0047c7",
-      "stroke-width": .18
-    }));
-    if (onPinClick && p.number) {
-      pg.setAttribute("role", "button");
-      pg.setAttribute("tabindex", "0");
-      pg.setAttribute("aria-label", `引脚 ${p.number}${p.name && p.name !== "~" ? " " + p.name : ""}`);
-      const fire = e => {
-        e.stopPropagation();
-        onPinClick(normPin(p.number));
-      };
-      pg.addEventListener("click", fire);
-      pg.addEventListener("keydown", e => {
-        if (e.key === "Enter" || e.key === " ") fire(e);
-      });
-    }
+    bindEcadPin(pg, p.number, `引脚 ${p.number}${p.name && p.name !== "~" ? " " + p.name : ""}`, onPinClick, sel);
     g.appendChild(pg);
     const inX = Math.cos(r),
       inY = -Math.sin(r),
@@ -1790,7 +1768,7 @@ function renderKicadSymTo(sym, svg, onPinClick, selPin, unit = 1) {
         fill: sel ? "#006cff" : "#7a8a80"
       });
       t.textContent = p.number;
-      g.appendChild(t);
+      pg.appendChild(t);
     }
     if (p.name && p.name !== "~") {
       const nx = ex + inX * .8,
@@ -1811,7 +1789,7 @@ function renderKicadSymTo(sym, svg, onPinClick, selPin, unit = 1) {
         fill: sel ? "#006cff" : "#1a2e23"
       });
       t.textContent = p.name;
-      g.appendChild(t);
+      pg.appendChild(t);
     }
   }
   return pins.length;
@@ -2571,6 +2549,22 @@ function EmptyPreview({
 }
 
 // ── SVG 缩放/平移视口（移植自 kicad-part-viewer）──
+// 选中引脚只重绘颜色，保留用户视口；新内容/单元才重新适配。
+function renderEcadPreview(svg, content, unit, draw) {
+  const same = svg._ecadContent === content && svg._ecadUnit === unit;
+  const view = same ? svg.getAttribute("viewBox") : null;
+  const focused = svg.contains(document.activeElement) ? document.activeElement?.getAttribute("data-pin") : null;
+  // legacy/footprint 渲染器使用固定画布，不能把用户缩放后的 viewBox 当作画布尺寸。
+  svg.setAttribute("viewBox", "0 0 800 520");
+  draw();
+  if (view) svg.setAttribute("viewBox", view);
+  attachViewport(svg, !same);
+  svg._ecadContent = content;
+  svg._ecadUnit = unit;
+  if (focused) Array.from(svg.querySelectorAll(".ecad-pin")).find(p => p.getAttribute("data-pin") === focused)?.focus({
+    preventScroll: true
+  });
+}
 function attachViewport(svg, rebase) {
   // base 取渲染器写入的 viewBox（符号是 mm 单位，封装也是），不能硬编码 800x520
   const readVB = () => {
@@ -2618,13 +2612,21 @@ function attachViewport(svg, rebase) {
     };
     apply();
   };
+  const toLocal = (x, y) => {
+    const point = svg.createSVGPoint();
+    point.x = x;
+    point.y = y;
+    return point.matrixTransform(svg.getScreenCTM().inverse());
+  };
   const zoomAt = (f, clientX, clientY) => {
     const r = svg.getBoundingClientRect();
     if (!r.width || !r.height) return;
     const px = clientX == null ? r.left + r.width / 2 : clientX,
       py = clientY == null ? r.top + r.height / 2 : clientY;
-    const ux = view.x + (px - r.left) / r.width * view.w,
-      uy = view.y + (py - r.top) / r.height * view.h;
+    const {
+      x: ux,
+      y: uy
+    } = toLocal(px, py);
     const B = svg._vpBase || base;
     const nw = Math.min(B.w * 8, Math.max(B.w / 20, view.w * f)),
       nh = nw * (B.h / B.w);
@@ -2656,15 +2658,19 @@ function attachViewport(svg, rebase) {
     last = {
       ...down
     };
-    svg.setPointerCapture(pid);
-    svg.style.cursor = "grabbing";
   });
   svg.addEventListener("pointermove", e => {
     if (!dragging || e.pointerId !== pid) return;
-    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) moved = true;
-    const r = svg.getBoundingClientRect();
-    view.x -= (e.clientX - last.x) / r.width * view.w;
-    view.y -= (e.clientY - last.y) / r.height * view.h;
+    if (!moved) {
+      if (Math.hypot(e.clientX - down.x, e.clientY - down.y) <= 5) return;
+      moved = true;
+      svg.setPointerCapture(pid);
+      svg.style.cursor = "grabbing";
+    }
+    const from = toLocal(last.x, last.y),
+      to = toLocal(e.clientX, e.clientY);
+    view.x -= to.x - from.x;
+    view.y -= to.y - from.y;
     last = {
       x: e.clientX,
       y: e.clientY
@@ -2682,6 +2688,17 @@ function attachViewport(svg, rebase) {
   };
   svg.addEventListener("pointerup", stop);
   svg.addEventListener("pointercancel", stop);
+  svg.addEventListener("pointerleave", () => {
+    if (!moved) stop();
+  });
+  // 只有真实拖拽才拦截 click；普通点击必须到达 pin/pad 的监听器。
+  svg.addEventListener("click", e => {
+    if (moved) {
+      e.preventDefault();
+      e.stopPropagation();
+      moved = false;
+    }
+  }, true);
   svg.addEventListener("dblclick", reset);
   svg.style.cursor = "grab";
   svg.style.touchAction = "none";
@@ -3315,25 +3332,21 @@ function GraphicsPanel({
 
   // 三栏小图渲染
   useEffect(() => {
-    if (!loading && fpRef.current && fpText) {
-      renderFootprintToSvg(fpText, fpRef.current, togglePin, pin);
-      attachViewport(fpRef.current, true);
-    }
-  }, [loading, fpText, pin]);
+    if (!loading && fpRef.current && fpText) renderEcadPreview(fpRef.current, fpText, 0, () => renderFootprintToSvg(fpText, fpRef.current, togglePin, pin));
+  }, [loading, fpText, pin, ksym, unit]);
   useEffect(() => {
     if (loading || !symRef.current) return;
-    if (ksym) renderKicadSymTo(ksym, symRef.current, togglePin, pin, unit);else if (symText) renderSymbolToSvg(symText, symRef.current, 1, togglePin, pin);
-    attachViewport(symRef.current, true);
+    renderEcadPreview(symRef.current, ksym || symText, unit, () => {
+      if (ksym) renderKicadSymTo(ksym, symRef.current, togglePin, pin, unit);else if (symText) renderSymbolToSvg(symText, symRef.current, 1, togglePin, pin);
+    });
   }, [loading, symText, ksym, pin, unit]);
   // 放大视图渲染
   useEffect(() => {
-    if (zoomed === "footprint" && bigFpRef.current && fpText) {
-      renderFootprintToSvg(fpText, bigFpRef.current, togglePin, pin);
-      attachViewport(bigFpRef.current, true);
-    }
+    if (zoomed === "footprint" && bigFpRef.current && fpText) renderEcadPreview(bigFpRef.current, fpText, 0, () => renderFootprintToSvg(fpText, bigFpRef.current, togglePin, pin));
     if (zoomed === "symbol" && bigSymRef.current) {
-      if (ksym) renderKicadSymTo(ksym, bigSymRef.current, togglePin, pin, unit);else if (symText) renderSymbolToSvg(symText, bigSymRef.current, 1, togglePin, pin);
-      attachViewport(bigSymRef.current, true);
+      renderEcadPreview(bigSymRef.current, ksym || symText, unit, () => {
+        if (ksym) renderKicadSymTo(ksym, bigSymRef.current, togglePin, pin, unit);else if (symText) renderSymbolToSvg(symText, bigSymRef.current, 1, togglePin, pin);
+      });
     }
   }, [zoomed, fpText, symText, ksym, pin, unit]);
   const tryAiPinout = async () => {

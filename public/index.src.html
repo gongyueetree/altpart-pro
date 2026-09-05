@@ -9,6 +9,10 @@
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 button,input{outline:none;font-family:inherit}
+/* SVG 的原生 focus outline 会随 mm 坐标放大；焦点只标记实际引脚。 */
+.ecad-pin:focus{outline:none}
+.ecad-pin:focus-visible [data-pin-mark]{stroke:#006cff}
+.ecad-pin:focus-visible text{text-decoration:underline}
 body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;color:#1a2e23}
 @keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -265,6 +269,21 @@ function normPin(v){
 }
 const samePin=(a,b)=>{const x=normPin(a),y=normPin(b);return !!x&&x===y;};
 
+function bindEcadPin(group,number,label,onPinClick,selected){
+  const pin=normPin(number);
+  group.setAttribute("class","ecad-pin");
+  group.setAttribute("data-pin",pin);
+  group.setAttribute("aria-pressed",String(!!selected));
+  if(!onPinClick||!pin)return;
+  group.setAttribute("role","button");group.setAttribute("tabindex","0");
+  group.setAttribute("aria-label",label);
+  const fire=e=>{e.stopPropagation();onPinClick(pin);};
+  group.addEventListener("click",fire);
+  group.addEventListener("keydown",e=>{
+    if(e.key==="Enter"||e.key===" "){e.preventDefault();fire(e);}
+  });
+}
+
 // ezPLM 的文件 URL（七牛云私有空间）带时效签名且需要鉴权，
 // 浏览器直连会拿到 nginx 的 401 Authorization Required；必须经同源代理取。
 // 但 datasheet 也可能落在厂商官网/分销商域名上，那些直连才对，代过去反而被代理的
@@ -388,21 +407,13 @@ function renderFootprintToSvg(txt,svg,onPinClick,selectedPin){
     const round=p.shape==="circle"||p.shape==="oval";
     const shape=round?mk("ellipse",{cx:0,cy:0,rx:p.w/2,ry:p.h/2}):mk("rect",{x:-p.w/2,y:-p.h/2,width:p.w,height:p.h,rx:p.shape.includes("round")?.12:0});
     shape.setAttribute("fill",sel?"#006cff":(p.num==="1"?"#d77b31":"#d69f36"));
-    shape.setAttribute("stroke",sel?"#0047c7":"#8c6419");shape.setAttribute("stroke-width",sel?".22":".04");
-    if(sel){const halo=mk("rect",{x:-p.w/2-.22,y:-p.h/2-.22,width:p.w+.44,height:p.h+.44,rx:.15,
-      fill:"none",stroke:"#0047c7","stroke-width":".08","stroke-dasharray":".18 .12"});
-      pg.appendChild(halo);}
+    shape.setAttribute("stroke",sel?"#0047c7":"#8c6419");shape.setAttribute("stroke-width",".04");
+    shape.setAttribute("data-pin-mark","pad");
     pg.appendChild(shape);
     const t=mk("text",{x:0,y:0,transform:`rotate(${-p.rot})`,"text-anchor":"middle","dominant-baseline":"middle",
       "font-size":Math.max(.28,Math.min(p.w,p.h)*.42),fill:"#fff","font-family":"Arial","font-weight":sel?"900":"700"});
     t.textContent=p.num;pg.appendChild(t);
-    if(onPinClick){
-      pg.setAttribute("role","button");pg.setAttribute("tabindex","0");
-      pg.setAttribute("aria-label",`焊盘 ${p.num}`);
-      const fire=e=>{e.stopPropagation();onPinClick(normPin(p.num));};
-      pg.addEventListener("click",fire);
-      pg.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" ")fire(e);});
-    }
+    bindEcadPin(pg,p.num,`焊盘 ${p.num}`,onPinClick,sel);
     g.appendChild(pg);});
   const legend=mk("g",{transform:`translate(22 ${h-22})`});
   [["#d6b937","F.SilkS"],["#db6a2b","F.CrtYd"],["#6c7d93","F.Fab"],["#d77b31","Pin 1"]].forEach((it,i)=>{
@@ -537,10 +548,10 @@ function renderSymbolToSvg(txt,svg,unit,onPinClick,selectedPin){
       const sel=samePin(selectedPin,num);
       const col=sel?"#006cff":"#a40000";
       const pg=mk("g",{style:"cursor:pointer"});
-      pg.appendChild(mk("line",{x1:x,y1:y,x2,y2,stroke:"transparent","stroke-width":34}));
-      pg.appendChild(mk("line",{x1:x,y1:y,x2,y2,stroke:col,"stroke-width":(sel?13:8)*Math.max(1,0.5/scale)}));
+      pg.appendChild(mk("line",{x1:x,y1:y,x2,y2,stroke:"transparent","stroke-width":34,"pointer-events":"stroke"}));
+      pg.appendChild(mk("line",{x1:x,y1:y,x2,y2,stroke:col,"stroke-width":(sel?10:8)*Math.max(1,0.5/scale),"data-pin-mark":"line"}));
       pg.appendChild(mk("circle",{cx:x,cy:y,r:11,fill:"none",stroke:col,"stroke-width":3}));
-      if(onPinClick)pg.addEventListener("click",e=>{e.stopPropagation();onPinClick(num);});
+      bindEcadPin(pg,num,`引脚 ${num}${name&&name!=="~"?" "+name:""}`,onPinClick,sel);
       g.appendChild(pg);
       const outer=toScreen(x,y),inner=toScreen(x2,y2);
       const dx=inner.x-outer.x,dy=inner.y-outer.y,dist=Math.hypot(dx,dy)||1,ux=dx/dist,uy=dy/dist;
@@ -649,30 +660,23 @@ function renderKicadSymTo(sym,svg,onPinClick,selPin,unit=1){
     const sel=samePin(selPin,p.number);
     const col=sel?"#006cff":SK;
     const pg=mk("g",{style:"cursor:pointer"});
-    pg.appendChild(mk("line",{x1:p.x,y1:-p.y,x2:ex,y2:-ey,stroke:"transparent","stroke-width":1.2}));
-    pg.appendChild(mk("line",{x1:p.x,y1:-p.y,x2:ex,y2:-ey,stroke:col,"stroke-width":sel?W*4:W}));
-    pg.appendChild(mk("circle",{cx:p.x,cy:-p.y,r:sel?.6:.35,fill:col}));
-    if(sel)pg.appendChild(mk("circle",{cx:p.x,cy:-p.y,r:1.1,fill:"none",stroke:"#0047c7","stroke-width":.18}));
-    if(onPinClick&&p.number){
-      pg.setAttribute("role","button");pg.setAttribute("tabindex","0");
-      pg.setAttribute("aria-label",`引脚 ${p.number}${p.name&&p.name!=="~"?" "+p.name:""}`);
-      const fire=e=>{e.stopPropagation();onPinClick(normPin(p.number));};
-      pg.addEventListener("click",fire);
-      pg.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" ")fire(e);});
-    }
+    pg.appendChild(mk("line",{x1:p.x,y1:-p.y,x2:ex,y2:-ey,stroke:"transparent","stroke-width":1.2,"pointer-events":"stroke"}));
+    pg.appendChild(mk("line",{x1:p.x,y1:-p.y,x2:ex,y2:-ey,stroke:col,"stroke-width":sel?W*1.5:W,"data-pin-mark":"line"}));
+    pg.appendChild(mk("circle",{cx:p.x,cy:-p.y,r:.35,fill:col,"data-pin-mark":"endpoint"}));
+    bindEcadPin(pg,p.number,`引脚 ${p.number}${p.name&&p.name!=="~"?" "+p.name:""}`,onPinClick,sel);
     g.appendChild(pg);
     const inX=Math.cos(r),inY=-Math.sin(r),vert=Math.abs(inY)>Math.abs(inX);
     if(p.number){
       const mx=(p.x+ex)/2,my=-(p.y+ey)/2;
       const t=vert?mk("text",{x:mx-.35,y:my,"font-size":1,"text-anchor":"middle",fill:sel?"#006cff":"#7a8a80",
         transform:`rotate(-90 ${mx-.35} ${my})`}):mk("text",{x:mx,y:my-.45,"font-size":1,"text-anchor":"middle",fill:sel?"#006cff":"#7a8a80"});
-      t.textContent=p.number;g.appendChild(t);}
+      t.textContent=p.number;pg.appendChild(t);}
     if(p.name&&p.name!=="~"){
       const nx=ex+inX*.8,ny=-ey+inY*.8;
       const anchor=vert?(inY>0?"end":"start"):(inX>0?"start":"end");
       const t=vert?mk("text",{x:nx,y:ny+.4,"font-size":1.15,"text-anchor":anchor,fill:sel?"#006cff":"#1a2e23",
         transform:`rotate(-90 ${nx} ${ny+.4})`}):mk("text",{x:nx,y:ny+.4,"font-size":1.15,"text-anchor":anchor,fill:sel?"#006cff":"#1a2e23"});
-      t.textContent=p.name;g.appendChild(t);}}
+      t.textContent=p.name;pg.appendChild(t);}}
   return pins.length;
 }
 
@@ -967,6 +971,19 @@ function EmptyPreview({text}){
 }
 
 // ── SVG 缩放/平移视口（移植自 kicad-part-viewer）──
+// 选中引脚只重绘颜色，保留用户视口；新内容/单元才重新适配。
+function renderEcadPreview(svg,content,unit,draw){
+  const same=svg._ecadContent===content&&svg._ecadUnit===unit;
+  const view=same?svg.getAttribute("viewBox"):null;
+  const focused=svg.contains(document.activeElement)?document.activeElement?.getAttribute("data-pin"):null;
+  // legacy/footprint 渲染器使用固定画布，不能把用户缩放后的 viewBox 当作画布尺寸。
+  svg.setAttribute("viewBox","0 0 800 520");draw();
+  if(view)svg.setAttribute("viewBox",view);
+  attachViewport(svg,!same);
+  svg._ecadContent=content;svg._ecadUnit=unit;
+  if(focused)Array.from(svg.querySelectorAll(".ecad-pin")).find(p=>p.getAttribute("data-pin")===focused)?.focus({preventScroll:true});
+}
+
 function attachViewport(svg,rebase){
   // base 取渲染器写入的 viewBox（符号是 mm 单位，封装也是），不能硬编码 800x520
   const readVB=()=>{const v=(svg.getAttribute("viewBox")||"").split(/[\s,]+/).map(Number);
@@ -981,10 +998,14 @@ function attachViewport(svg,rebase){
   let view={...base},dragging=false,pid=null,last={x:0,y:0},down={x:0,y:0},moved=false;
   const apply=()=>svg.setAttribute("viewBox",`${view.x} ${view.y} ${view.w} ${view.h}`);
   const reset=()=>{view={...(svg._vpBase||base)};apply()};
+  const toLocal=(x,y)=>{
+    const point=svg.createSVGPoint();point.x=x;point.y=y;
+    return point.matrixTransform(svg.getScreenCTM().inverse());
+  };
   const zoomAt=(f,clientX,clientY)=>{
     const r=svg.getBoundingClientRect();if(!r.width||!r.height)return;
     const px=clientX==null?r.left+r.width/2:clientX, py=clientY==null?r.top+r.height/2:clientY;
-    const ux=view.x+(px-r.left)/r.width*view.w, uy=view.y+(py-r.top)/r.height*view.h;
+    const {x:ux,y:uy}=toLocal(px,py);
     const B=svg._vpBase||base;
     const nw=Math.min(B.w*8,Math.max(B.w/20,view.w*f)), nh=nw*(B.h/B.w);
     const rx=(ux-view.x)/view.w, ry=(uy-view.y)/view.h;
@@ -992,14 +1013,20 @@ function attachViewport(svg,rebase){
   };
   svg.addEventListener("wheel",e=>{e.preventDefault();zoomAt(e.deltaY>0?1.12:.89,e.clientX,e.clientY)},{passive:false});
   svg.addEventListener("pointerdown",e=>{if(e.button!==0)return;dragging=true;moved=false;pid=e.pointerId;
-    down={x:e.clientX,y:e.clientY};last={...down};svg.setPointerCapture(pid);svg.style.cursor="grabbing"});
+    down={x:e.clientX,y:e.clientY};last={...down};});
   svg.addEventListener("pointermove",e=>{if(!dragging||e.pointerId!==pid)return;
-    if(Math.hypot(e.clientX-down.x,e.clientY-down.y)>5)moved=true;
-    const r=svg.getBoundingClientRect();
-    view.x-=(e.clientX-last.x)/r.width*view.w;view.y-=(e.clientY-last.y)/r.height*view.h;
+    if(!moved){
+      if(Math.hypot(e.clientX-down.x,e.clientY-down.y)<=5)return;
+      moved=true;svg.setPointerCapture(pid);svg.style.cursor="grabbing";
+    }
+    const from=toLocal(last.x,last.y),to=toLocal(e.clientX,e.clientY);
+    view.x-=to.x-from.x;view.y-=to.y-from.y;
     last={x:e.clientX,y:e.clientY};apply()});
   const stop=()=>{if(!dragging)return;dragging=false;try{svg.releasePointerCapture(pid)}catch{}pid=null;svg.style.cursor="grab"};
   svg.addEventListener("pointerup",stop);svg.addEventListener("pointercancel",stop);
+  svg.addEventListener("pointerleave",()=>{if(!moved)stop();});
+  // 只有真实拖拽才拦截 click；普通点击必须到达 pin/pad 的监听器。
+  svg.addEventListener("click",e=>{if(moved){e.preventDefault();e.stopPropagation();moved=false;}},true);
   svg.addEventListener("dblclick",reset);
   svg.style.cursor="grab";svg.style.touchAction="none";
   apply();
@@ -1401,21 +1428,25 @@ function GraphicsPanel({d,pn}){
 
   // 三栏小图渲染
   useEffect(()=>{
-    if(!loading&&fpRef.current&&fpText){renderFootprintToSvg(fpText,fpRef.current,togglePin,pin);attachViewport(fpRef.current,true);}
-  },[loading,fpText,pin]);
+    if(!loading&&fpRef.current&&fpText)renderEcadPreview(fpRef.current,fpText,0,
+      ()=>renderFootprintToSvg(fpText,fpRef.current,togglePin,pin));
+  },[loading,fpText,pin,ksym,unit]);
   useEffect(()=>{
     if(loading||!symRef.current)return;
-    if(ksym)renderKicadSymTo(ksym,symRef.current,togglePin,pin,unit);
-    else if(symText)renderSymbolToSvg(symText,symRef.current,1,togglePin,pin);
-    attachViewport(symRef.current,true);
+    renderEcadPreview(symRef.current,ksym||symText,unit,()=>{
+      if(ksym)renderKicadSymTo(ksym,symRef.current,togglePin,pin,unit);
+      else if(symText)renderSymbolToSvg(symText,symRef.current,1,togglePin,pin);
+    });
   },[loading,symText,ksym,pin,unit]);
   // 放大视图渲染
   useEffect(()=>{
-    if(zoomed==="footprint"&&bigFpRef.current&&fpText){renderFootprintToSvg(fpText,bigFpRef.current,togglePin,pin);attachViewport(bigFpRef.current,true);}
+    if(zoomed==="footprint"&&bigFpRef.current&&fpText)renderEcadPreview(bigFpRef.current,fpText,0,
+      ()=>renderFootprintToSvg(fpText,bigFpRef.current,togglePin,pin));
     if(zoomed==="symbol"&&bigSymRef.current){
-      if(ksym)renderKicadSymTo(ksym,bigSymRef.current,togglePin,pin,unit);
-      else if(symText)renderSymbolToSvg(symText,bigSymRef.current,1,togglePin,pin);
-      attachViewport(bigSymRef.current,true);
+      renderEcadPreview(bigSymRef.current,ksym||symText,unit,()=>{
+        if(ksym)renderKicadSymTo(ksym,bigSymRef.current,togglePin,pin,unit);
+        else if(symText)renderSymbolToSvg(symText,bigSymRef.current,1,togglePin,pin);
+      });
     }
   },[zoomed,fpText,symText,ksym,pin,unit]);
 
