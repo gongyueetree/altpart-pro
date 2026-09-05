@@ -3,7 +3,7 @@ const {
   useEffect,
   useRef
 } = React;
-const APP_VERSION = "7.0.0";
+const APP_VERSION = "7.0.1";
 const C = {
   green: "#1a6c4e",
   greenLight: "#e8f5ef",
@@ -2846,10 +2846,9 @@ function Step3DViewer({
     } catch {}
     disposeRef.current = null;
     try {
-      // ⚠ Babel standalone 会把静态写法的 import() 转译成 require()（浏览器无此函数）。
-      // 用 new Function 构造，使动态 import 在运行时才出现，绕过编译期转换。
-      // three.js 是标准 ESM，用动态 import；OCCT 是 UMD，用 script 标签
-      const dynImport = new Function("u", "return import(u)");
+      // 生产构建仅转换 JSX，保留浏览器原生 import()，无需字符串执行包装。
+      // OCCT 的 Embind 内核另有动态执行要求，见 docs/3D_CSP_COMPATIBILITY.md。
+      const dynImport = u => import(u);
       const [occt, THREE, orbitMod, envMod] = await Promise.all([loadOcct(setMsg), dynImport(THREE_CDN), dynImport(ORBIT_CDN), dynImport(ENV_CDN).catch(() => null) // 环境贴图可选：CDN 失败仍可渲染，只是质感降级
       ]);
       const OrbitControls = orbitMod.OrbitControls;
