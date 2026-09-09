@@ -4540,7 +4540,9 @@ function VariantPicker({
   base,
   onPick,
   onSkip,
-  onBack
+  onBack,
+  busy,
+  err
 }) {
   return pbElement("div", {
     style: {
@@ -4571,9 +4573,20 @@ function VariantPicker({
       fontSize: 13,
       color: C.textMute
     }
-  }, "\u8BF7\u786E\u8BA4\u5177\u4F53\u578B\u53F7\uFF0C\u5C01\u88C5\u4FE1\u606F\u5C06\u7528\u4E8E\u66FF\u4EE3\u5339\u914D")), (base.variants || []).map((v, i) => pbElement("div", {
+  }, "\u8BF7\u786E\u8BA4\u5177\u4F53\u578B\u53F7\uFF0C\u5C01\u88C5\u4FE1\u606F\u5C06\u7528\u4E8E\u66FF\u4EE3\u5339\u914D")), busy && pbElement("div", {
+    role: "status"
+  }, "\u67E5\u8BE2\u4E2D\u2026"), err && pbElement("div", {
+    role: "alert",
+    style: {
+      color: "#a0302a",
+      marginBottom: 12
+    }
+  }, err), (base.variants || []).map((v, i) => pbElement("div", {
     key: i,
-    onClick: () => onPick(v),
+    "aria-disabled": busy,
+    onClick: () => {
+      if (!busy) onPick(v);
+    },
     style: {
       display: "flex",
       alignItems: "center",
@@ -4633,6 +4646,7 @@ function VariantPicker({
       marginTop: 16
     }
   }, pbElement("button", {
+    disabled: busy,
     onClick: onSkip,
     style: {
       flex: 1,
@@ -4645,6 +4659,7 @@ function VariantPicker({
       cursor: "pointer"
     }
   }, "\u8DF3\u8FC7\uFF0C\u76F4\u63A5\u4F7F\u7528 ", base.partNumber, "\uFF08\u4E0D\u9650\u5B9A\u5C01\u88C5\uFF09"), pbElement("button", {
+    disabled: busy,
     onClick: onBack,
     style: {
       padding: "11px 20px",
@@ -6909,7 +6924,9 @@ function App() {
     BAD_REQUEST: "请输入有效的器件型号",
     INTERNAL: "服务内部错误，请稍后重试"
   };
-  const analyze = async pn => {
+  const analyze = async (pn, {
+    confirmedVariant = false
+  } = {}) => {
     if (busy) return;
     setBusy(true);
     setDemoNote("");
@@ -6935,7 +6952,7 @@ function App() {
           ...d.original,
           _analysisContext: d.analysisContext || null
         };
-        if ((d.original.variants || []).length >= 2) {
+        if (!confirmedVariant && (d.original.variants || []).length >= 2) {
           setVariantBase(secured);
           setPage("variants");
         } else {
@@ -7086,27 +7103,16 @@ function App() {
     err: homeErr
   }), page === "variants" && variantBase && pbElement(VariantPicker, {
     base: variantBase,
-    onPick: v => {
-      const params = (variantBase.parameters || []).map(p => (p.name.includes("封装") || String(p.nameEn || "").toLowerCase().includes("package")) && v.package ? {
-        ...p,
-        value: v.package
-      } : p);
-      setOriginal({
-        ...variantBase,
-        partNumber: v.pn,
-        parameters: params,
-        variants: [],
-        _pkgConfirmed: true,
-        _analysisContext: null
-      });
-      setPage("workbench");
-    },
+    busy: busy,
+    err: homeErr,
+    onPick: v => analyze(v.pn, {
+      confirmedVariant: true
+    }),
     onSkip: () => {
       setOriginal({
         ...variantBase,
         variants: [],
-        _pkgConfirmed: false,
-        _analysisContext: null
+        _pkgConfirmed: false
       });
       setPage("workbench");
     },

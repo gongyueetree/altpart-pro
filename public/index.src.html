@@ -1872,7 +1872,7 @@ function PartDetailModal({pn,rec,onClose}){
 }
 
 // ═══ 封装变体确认页 ═══
-function VariantPicker({base,onPick,onSkip,onBack}){
+function VariantPicker({base,onPick,onSkip,onBack,busy,err}){
   return(<div style={{maxWidth:620,margin:"50px auto",padding:"0 24px",animation:"fadeUp 0.4s ease both"}}>
     <div style={{textAlign:"center",marginBottom:24}}>
       <div style={{fontSize:20,fontWeight:700,color:C.text,marginBottom:6}}>
@@ -1880,8 +1880,10 @@ function VariantPicker({base,onPick,onSkip,onBack}){
       </div>
       <div style={{fontSize:13,color:C.textMute}}>请确认具体型号，封装信息将用于替代匹配</div>
     </div>
+    {busy&&<div role="status">查询中…</div>}
+    {err&&<div role="alert" style={{color:"#a0302a",marginBottom:12}}>{err}</div>}
     {(base.variants||[]).map((v,i)=>(
-      <div key={i} onClick={()=>onPick(v)}
+      <div key={i} aria-disabled={busy} onClick={()=>{if(!busy)onPick(v)}}
         style={{display:"flex",alignItems:"center",gap:14,padding:"14px 18px",borderRadius:10,border:`1.5px solid ${C.border}`,background:"#fff",marginBottom:10,cursor:"pointer",transition:"all 0.15s"}}
         onMouseEnter={e=>{e.currentTarget.style.borderColor=C.green;e.currentTarget.style.background=C.greenLight}}
         onMouseLeave={e=>{e.currentTarget.style.borderColor=C.border;e.currentTarget.style.background="#fff"}}>
@@ -1893,8 +1895,8 @@ function VariantPicker({base,onPick,onSkip,onBack}){
         <span style={{color:C.textMute}}>→</span>
       </div>))}
     <div style={{display:"flex",gap:10,marginTop:16}}>
-      <button onClick={onSkip} style={{flex:1,padding:"11px",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.textSec,fontSize:13,cursor:"pointer"}}>跳过，直接使用 {base.partNumber}（不限定封装）</button>
-      <button onClick={onBack} style={{padding:"11px 20px",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.textMute,fontSize:13,cursor:"pointer"}}>← 返回</button>
+      <button disabled={busy} onClick={onSkip} style={{flex:1,padding:"11px",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.textSec,fontSize:13,cursor:"pointer"}}>跳过，直接使用 {base.partNumber}（不限定封装）</button>
+      <button disabled={busy} onClick={onBack} style={{padding:"11px 20px",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.textMute,fontSize:13,cursor:"pointer"}}>← 返回</button>
     </div>
   </div>);
 }
@@ -2685,7 +2687,7 @@ function App(){
     INTERNAL:"服务内部错误，请稍后重试",
   };
 
-  const analyze=async(pn)=>{
+  const analyze=async(pn,{confirmedVariant=false}={})=>{
     if(busy)return;
     setBusy(true);setDemoNote("");setHomeErr("");
     const ctl=new AbortController();
@@ -2699,7 +2701,7 @@ function App(){
 
       if(r.ok&&d&&d.success&&d.original?.parameters?.length){
         const secured={...d.original,_analysisContext:d.analysisContext||null};
-        if((d.original.variants||[]).length>=2){
+        if(!confirmedVariant&&(d.original.variants||[]).length>=2){
           setVariantBase(secured);setPage("variants");
         }else{
           setOriginal({...secured,_pkgConfirmed:true});setPage("workbench");
@@ -2751,15 +2753,9 @@ function App(){
     <TranslationNotice/>
     <main style={{minHeight:"calc(100vh - 130px)"}}>
       {page==="home"&&<HomePage onSubmit={analyze} busy={busy} err={homeErr}/>}
-      {page==="variants"&&variantBase&&<VariantPicker base={variantBase}
-        onPick={v=>{
-          const params=(variantBase.parameters||[]).map(p=>
-            (p.name.includes("封装")||String(p.nameEn||"").toLowerCase().includes("package"))&&v.package
-              ?{...p,value:v.package}:p);
-          setOriginal({...variantBase,partNumber:v.pn,parameters:params,variants:[],_pkgConfirmed:true,_analysisContext:null});
-          setPage("workbench");
-        }}
-        onSkip={()=>{setOriginal({...variantBase,variants:[],_pkgConfirmed:false,_analysisContext:null});setPage("workbench")}}
+      {page==="variants"&&variantBase&&<VariantPicker base={variantBase} busy={busy} err={homeErr}
+        onPick={v=>analyze(v.pn,{confirmedVariant:true})}
+        onSkip={()=>{setOriginal({...variantBase,variants:[],_pkgConfirmed:false});setPage("workbench")}}
         onBack={()=>setPage("home")}/>}
       {page==="workbench"&&original&&<Workbench key={original.partNumber} original={original} demoNote={demoNote} onBack={()=>setPage("home")} onSwitchVariant={v=>analyze(v.pn)}/>}
     </main>

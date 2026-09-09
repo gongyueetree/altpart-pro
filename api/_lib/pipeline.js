@@ -321,7 +321,7 @@ async function runPipeline({ partNumber, mode, scenario, application = "generic"
     error.invalidRequest = true; throw error;
   }
   const cleanPriority = [...new Set((priorityOrder || []).map(String))];
-  const unknownPriority = cleanPriority.find(id => !usable.some(p => p.id === id));
+  const unknownPriority = cleanPriority.find(id => !params.some(p => p.id === id));
   if (unknownPriority) {
     const error = new Error(`priorityOrder 包含未知参数：${unknownPriority}`);
     error.invalidRequest = true; throw error;

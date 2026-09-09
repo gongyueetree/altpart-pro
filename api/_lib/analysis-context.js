@@ -7,7 +7,13 @@ const MAX_TOKEN_BYTES = 64 * 1024;
 
 function secret() {
   const value = String(process.env.ANALYSIS_CONTEXT_SECRET || "");
-  return Buffer.byteLength(value) >= 32 ? value : null;
+  if (value) return Buffer.byteLength(value) >= 32 ? value : null;
+  // Existing deployments already have a private provider credential. Derive a
+  // domain-separated signing key rather than re-querying mutable AI enrichment.
+  const provider = [process.env.EZPLM_API_KEY, process.env.GEMINI_API_KEY]
+    .find(key => Buffer.byteLength(String(key || "")) >= 32);
+  return provider ? crypto.createHmac("sha256", provider)
+    .update("partbridge:analysis-context:signing:v1").digest("hex") : null;
 }
 
 const text = (value, max) => String(value ?? "").slice(0, max);
@@ -110,4 +116,4 @@ function verifyAnalysisContext(token, requestedPartNumber, nowSeconds = Math.flo
   return { valid: true, original: payload.original, issuedAt: payload.iat };
 }
 
-module.exports = { signAnalysisContext, verifyAnalysisContext, safeOriginal, MAX_AGE_SECONDS };
+module.exports = { signingConfigured: () => !!secret(), signAnalysisContext, verifyAnalysisContext, safeOriginal, MAX_AGE_SECONDS };

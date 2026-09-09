@@ -34,7 +34,7 @@ module.exports = withCors(async (req, res) => {
     const analysisContext = signAnalysisContext(original, original.partNumber);
     return ok(res, { original, analysisContext,
       contextExpiresInSeconds: analysisContext ? require("../_lib/analysis-context").MAX_AGE_SECONDS : null,
-      contextWarning: analysisContext ? undefined : "ANALYSIS_CONTEXT_SECRET 未配置；推荐时将重新查询原器件，不信任客户端回传参数" });
+      contextWarning: analysisContext ? undefined : "未配置可用的签名密钥；推荐时将重新查询原器件，不信任客户端回传参数" });
   } catch (e) {
     console.error("[analyze] failed:", e.message);
     return fail(res, "INTERNAL", e.message || "器件参数解析失败");

@@ -16,7 +16,7 @@ module.exports = withCors(async (req, res) => {
       ezplmBaseUrl: (process.env.EZPLM_BASE_URL || "https://www.ezplm.cn"),
       ezplmQuota: require("./ezplm").quotaStatus ? require("./ezplm").quotaStatus() : "unknown",
       mode: process.env.EZPLM_API_KEY ? "production" : "demo (built-in mock data)",
-      analysisContextSigningConfigured: Buffer.byteLength(String(process.env.ANALYSIS_CONTEXT_SECRET || "")) >= 32,
+      analysisContextSigningConfigured: require("./_lib/analysis-context").signingConfigured(),
       apiAuthRequired: String(process.env.ALTPART_REQUIRE_AUTH || "").toLowerCase() === "true",
       rateLimitBackend: "instance_memory",
       scoringEngine: `v${APP_VERSION} (QuantityIR + 比较语义 + 硬约束缺失拦截 + 引脚证据门槛)`,

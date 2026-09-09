@@ -29,3 +29,7 @@ Requests allow at most 32 strings, 2048 characters per string and 12000 characte
 - DOM integration tests run the actual production bundle with React 18.2.0 in jsdom: homepage labels need no model call; language switches preserve part input, procurement controls and original values.
 - Local CI commands: `npm run check`, `npm run build`, `npm test`.
 - Model responses in automated tests are controlled fixtures. Deployment validation must distinguish actual Gemini translation from fixture and glossary translation.
+
+## Analysis snapshot correction
+
+If `ANALYSIS_CONTEXT_SECRET` is absent, a domain-separated HMAC signing key is derived from an existing private ezPLM or Gemini credential (at least 32 bytes). An explicitly configured but too-short secret remains invalid. Provider-key rotation invalidates existing contexts; production may still configure a dedicated secret for independent rotation. The client receives only the signed snapshot, never the signing key or provider credentials. Variant selection now re-analyzes the selected ordering code and retains its new signed parameter snapshot. Known parameters with N/A values are accepted in priority lists but excluded from numeric scoring; genuinely unknown IDs remain rejected.
