@@ -1,7 +1,7 @@
 {
   "name": "altpart-pro",
-  "version": "7.0.1",
-  "description": "AltPart Pro — 元器件替代决策智能体（ezPLM集成 · 确定性评分 · 证据可信度）",
+  "version": "7.1.0",
+  "description": "PartBridge 元件通 — Component search, design resources and evidence-based alternatives",
   "private": true,
   "engines": {
     "node": ">=18.x"
@@ -23,6 +23,9 @@
     "@babel/preset-react": "^7.24.0",
     "acorn": "^8.11.3",
     "acorn-jsx": "^5.3.2",
-    "eslint-scope": "^8.0.0"
+    "eslint-scope": "^8.0.0",
+    "jsdom": "26.1.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
   }
 }

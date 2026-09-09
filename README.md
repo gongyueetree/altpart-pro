@@ -1,4 +1,13 @@
-# AltPart Pro
+# 元件通 · PartBridge
+
+元器件查询、设计资源下载与替代料推荐，支持中文 / English 切换。
+
+- 本地词典覆盖菜单与常用术语；英文模式按需翻译 ezPLM 的中文描述、参数名与提示。
+- 自动翻译复用 `GEMINI_API_KEY` / `GEMINI_MODEL`。无密钥或翻译失败时明确显示原文与重试提示。
+- 语言偏好保存到浏览器；器件翻译仅在内存缓存，不改写数据库、评分输入或 KiCad/STEP 文件。
+- 详见 [双语实现与验收](docs/PARTBRIDGE_I18N.md)。
+
+# PartBridge
 
 > 元器件替代决策智能体 · ezPLM 集成 · 实时行情 · 场景化替代
 
