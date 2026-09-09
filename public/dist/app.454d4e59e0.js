@@ -6948,6 +6948,11 @@ function App() {
       const ct = r.headers.get("content-type") || "";
       const d = ct.includes("json") ? await r.json().catch(() => null) : null;
       if (r.ok && d && d.success && d.original?.parameters?.length) {
+        const normalizeMpn = x => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+        if (confirmedVariant && normalizeMpn(d.original.partNumber) !== normalizeMpn(pn)) {
+          setHomeErr(`所选型号 ${pn} 未获得精确匹配，数据源返回 ${d.original.partNumber}。请重新选择，不能使用其它变体的数据确认该型号。`);
+          return;
+        }
         const secured = {
           ...d.original,
           _analysisContext: d.analysisContext || null
