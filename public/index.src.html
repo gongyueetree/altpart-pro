@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AltPart Pro · 元器件替代决策智能体</title>
+<title>元件通 · PartBridge · 元器件查询与设计资源</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 2L3 7v10l9 5 9-5V7l-9-5z' fill='%231a6c4e'/></svg>">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -29,10 +29,57 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:#f7faf8;colo
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="./i18n/en.js?v=7.1.0"></script>
+<script src="./i18n/runtime.js?v=7.1.0"></script>
 <script type="text/babel">
+/** @jsx pbElement */
 const{useState,useEffect,useRef}=React;
 
-const APP_VERSION="7.0.1";
+
+const I18N=window.PartBridgeI18n;
+function useLocale(){ React.useSyncExternalStore(I18N.subscribe,I18N.snapshot,I18N.snapshot); return I18N.language(); }
+function LocalizedText({text}){
+  const language=useLocale();
+  useEffect(()=>{I18N.schedule(text)},[text,language]);
+  return I18N.read(text);
+}
+const LOCALIZED_ATTRIBUTES=["title","placeholder","aria-label","alt"];
+const LocalizedHost=React.forwardRef(function LocalizedHost({tag,hostProps,children},ref){
+  const language=useLocale();
+  const strings=LOCALIZED_ATTRIBUTES.map(key=>hostProps[key]);
+  useEffect(()=>{strings.forEach(text=>{if(typeof text==="string")I18N.schedule(text)})},[language,...strings]);
+  const props={...hostProps,ref};
+  LOCALIZED_ATTRIBUTES.forEach(key=>{if(typeof props[key]==="string")props[key]=I18N.read(props[key])});
+  return React.createElement(tag,props,children);
+});
+function pbElement(type,props,...children){
+  if(typeof type!=="string" || props?.translate==="no" || ["script","style","textarea"].includes(type))return React.createElement(type,props,...children);
+  const translateChild=(child,index)=>Array.isArray(child)?child.map(translateChild):
+    I18N.hasChinese(child)?React.createElement(LocalizedText,{key:`text-${index}`,text:child}):child;
+  // Option labels must never change the submitted value.
+  if(type==="option" && props?.value===undefined && children.every(c=>typeof c==="string"))props={...props,value:children.join("")};
+  const localized=children.map(translateChild);
+  if(LOCALIZED_ATTRIBUTES.some(key=>I18N.hasChinese(props?.[key]))){
+    const {key,ref,...hostProps}=props;
+    return React.createElement(LocalizedHost,{key,ref,tag:type,hostProps},...localized);
+  }
+  return React.createElement(type,props,...localized);
+}
+function LanguageControl(){
+  const language=useLocale();
+  return <div style={{display:"flex",gap:4}} aria-label="Language / 语言" translate="no">
+    {[["zh","中文"],["en","English"]].map(([value,label])=><button key={value} lang={value==="zh"?"zh-CN":"en"} aria-pressed={language===value} onClick={()=>I18N.setLanguage(value)} style={{padding:"7px 10px",borderRadius:6,border:"1px solid #c2e5d3",background:language===value?"#e8f5ef":"#fff",cursor:"pointer"}} translate="no">{label}</button>)}
+  </div>;
+}
+function TranslationNotice(){
+  const language=useLocale();
+  if(language!=="en")return null;
+  return <div translate="no" role="status" style={{maxWidth:1400,margin:"0 auto",padding:"6px 24px",fontSize:11,color:I18N.failedCount()?"#854f0b":"#4a6b58"}}>
+    {I18N.failedCount()?<React.Fragment>Some text could not be translated; its original is shown. <button onClick={()=>I18N.retry()}>Retry translation</button></React.Fragment>:"Database text is automatically translated. Part numbers, values and design files retain their original data."}
+  </div>;
+}
+
+const APP_VERSION="7.1.0";
 
 const C={
   green:"#1a6c4e",greenLight:"#e8f5ef",greenMid:"#c2e5d3",greenAccent:"#2d9d6f",
@@ -818,15 +865,15 @@ function exportKicadSym(sym,meta={}){
   // 首部注释：即使属性被工具剥离，注释仍可被人工与脚本读到
   L.push(`; ============================================================`);
   L.push(`; status=${status}`);
-  L.push(`; generator=AltPart Pro v${meta.appVersion||APP_VERSION}`);
+  L.push(`; generator=PartBridge v${meta.appVersion||APP_VERSION}`);
   L.push(`; generated_at=${meta.generatedAt||new Date().toISOString()}`);
   L.push(`; source=${meta.source||"unknown"}`);
   if(meta.sourceUuid)L.push(`; source_uuid=${meta.sourceUuid}`);
   L.push(`; part=${meta.partNumber||""}  manufacturer=${meta.manufacturer||""}`);
   if(status==="NOT_FOR_PRODUCTION")
-    L.push(`; WARNING: 本符号由 AltPart Pro 自动生成，引脚定义未经 datasheet 人工核对，不可直接用于生产。`);
+    L.push(`; WARNING: 本符号由 PartBridge 自动生成，引脚定义未经 datasheet 人工核对，不可直接用于生产。`);
   L.push(`; ============================================================`);
-  L.push(`(kicad_symbol_lib (version 20231120) (generator "AltPart Pro") (generator_version "9.0")`);
+  L.push(`(kicad_symbol_lib (version 20231120) (generator "PartBridge") (generator_version "9.0")`);
   L.push(`  (symbol "${name}"`);
   L.push(`    (exclude_from_sim no) (in_bom yes) (on_board yes)`);
   // 属性字段
@@ -841,7 +888,7 @@ function exportKicadSym(sym,meta={}){
   if(meta.source)props.push(["AltPart_Source",esc(meta.source),0,-15.24,"yes"]);
   // ALT-015：风险状态必须随文件持久化，脱离网页后仍可被人工与脚本识别
   props.push(["AltPart_Status",esc(meta.validationState||"NOT_FOR_PRODUCTION"),0,-17.78,"yes"]);
-  props.push(["AltPart_Generator",esc(`AltPart Pro v${meta.appVersion||APP_VERSION}`),0,-20.32,"yes"]);
+  props.push(["AltPart_Generator",esc(`PartBridge v${meta.appVersion||APP_VERSION}`),0,-20.32,"yes"]);
   props.push(["AltPart_GeneratedAt",esc(meta.generatedAt||new Date().toISOString()),0,-22.86,"yes"]);
   if(meta.sourceUuid)props.push(["AltPart_SourceUUID",esc(meta.sourceUuid),0,-25.4,"yes"]);
   for(const[k,v,x,y,hide] of props){
@@ -897,7 +944,7 @@ function annotateFootprint(text,meta={}){
   const head=[
     "; ============================================================",
     `; status=${status}`,
-    `; generator=AltPart Pro v${APP_VERSION}`,
+    `; generator=PartBridge v${APP_VERSION}`,
     `; generated_at=${new Date().toISOString()}`,
     `; source=${meta.srcFp||"unknown"}`,
     meta.sourceUuid?`; source_uuid=${meta.sourceUuid}`:"",
@@ -920,6 +967,12 @@ function annotateFootprint(text,meta={}){
   return head+out;
 }
 
+async function downloadReport(filename,text,mime){
+  try {
+    const translated=await I18N.translateAll(text.split("\n"));
+    downloadText(filename,translated.join("\n"),mime);
+  } catch(error){alert(error.message||"Translation unavailable. Please retry.")}
+}
 function downloadText(filename,text,mime="text/plain;charset=utf-8"){
   const blob=new Blob(["\ufeff".length?text:text],{type:mime});
   const a=document.createElement("a");
@@ -1849,12 +1902,12 @@ function VariantPicker({base,onPick,onSkip,onBack}){
 // ═══ 首页 ═══
 function HomePage({onSubmit,busy,err}){
   const[pn,setPn]=useState("");
-  return(<div style={{maxWidth:640,margin:"60px auto",padding:"0 24px",textAlign:"center",animation:"fadeUp 0.5s ease both"}}>
+  return(<div style={{maxWidth:820,margin:"60px auto",padding:"0 24px",textAlign:"center",animation:"fadeUp 0.5s ease both"}}>
     <svg width="56" height="56" viewBox="0 0 56 56" fill="none" style={{marginBottom:16}}>
       <rect x="4" y="4" width="48" height="48" rx="12" stroke={C.green} strokeWidth="1.5" fill={C.greenLight}/>
       <path d="M20 28h16M28 20v16" stroke={C.green} strokeWidth="2" strokeLinecap="round"/>
     </svg>
-    <h2 style={{fontSize:28,fontWeight:700,color:C.green,marginBottom:8}}>元器件替代料智能推荐</h2>
+    <h2 style={{fontSize:26,fontWeight:700,color:C.green,marginBottom:16}}>查询元器件 · 下载设计资源 · 寻找替代料</h2>
     <div style={{display:"flex",gap:8,marginBottom:14}}>
       <input value={pn} onChange={e=>setPn(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&pn.trim())onSubmit(pn.trim())}}
         placeholder="输入原始器件型号，如 STM32F103C8T6" autoFocus
@@ -1868,7 +1921,7 @@ function HomePage({onSubmit,busy,err}){
       {["STM32F103C8T6","LM358","AMS1117-3.3","TL431"].map(x=>(
         <button key={x} onClick={()=>setPn(x)} style={{padding:"3px 9px",borderRadius:5,border:`1px solid ${C.border}`,background:"#fff",color:C.textSec,fontSize:11,fontFamily:"'DM Mono',monospace",cursor:"pointer",marginRight:4}}>{x}</button>))}
     </div>
-    <div className="flow-row" style={{marginTop:28,display:"flex",alignItems:"center",justifyContent:"center",gap:6,flexWrap:"nowrap",fontSize:12,color:C.textSec,overflowX:"auto",paddingBottom:4}}>
+    <div className="flow-row" style={{marginTop:28,display:"flex",alignItems:"center",justifyContent:"center",gap:6,flexWrap:"wrap",fontSize:12,color:C.textSec,overflowX:"auto",paddingBottom:4}}>
       <span style={FLOW_A}>① 本地库查参数</span><span style={FLOW_ARROW}>→</span>
       <span style={FLOW_B}>② 调优先级/约束</span><span style={FLOW_ARROW}>→</span>
       <span style={FLOW_C}>③ AI推荐候选</span><span style={FLOW_ARROW}>→</span>
@@ -2276,7 +2329,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
     };
   };
 
-  const DISCLAIMER="本报告由 AltPart Pro 自动生成，用于替代料候选探索与证据辅助。"
+  const DISCLAIMER="本报告由 PartBridge 自动生成，用于替代料候选探索与证据辅助。"
     +"标记为『待核验』的候选缺少权威来源确认或存在未知硬约束，不构成替代结论。"
     +"任何替代决策须经工程师核对原厂 datasheet 后确认。";
 
@@ -2286,7 +2339,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
     const L=[];
     L.push(`# ${m.meta.originalPart} 替代料推荐报告`,"");
     L.push(`- 生成时间：${m.meta.generatedAt}`);
-    L.push(`- 工具版本：AltPart Pro v${m.meta.appVersion}`);
+    L.push(`- 工具版本：PartBridge v${m.meta.appVersion}`);
     if(m.meta.requestId)L.push(`- 请求编号：${m.meta.requestId}`);
     L.push(`- 原型号：${m.meta.originalPart}${m.meta.originalManufacturer?`（${m.meta.originalManufacturer}）`:""}`);
     if(m.meta.requestedMpn!==m.meta.originalPart)
@@ -2323,7 +2376,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
       m.eliminated.forEach(e=>L.push(`| ${e.partNumber} | ${e.manufacturer||""} | ${(e.reason||"").replace(/\|/g,"／")} |`));
     }else L.push("> 无");
     L.push("","---","",`> ${DISCLAIMER}`);
-    downloadText(`${m.meta.originalPart}_替代推荐.md`,"\uFEFF"+L.join("\n"),"text/markdown;charset=utf-8");
+    downloadReport(`${m.meta.originalPart}_alternatives.md`,"\uFEFF"+L.join("\n"),"text/markdown;charset=utf-8");
   };
 
   const exportCSV=()=>{
@@ -2331,7 +2384,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
     const m=buildExportModel();
     const q=v=>`"${String(v??"").replace(/"/g,'""')}"`;
     const rows=[];
-    rows.push(["# AltPart Pro 替代料推荐报告"].map(q).join(","));
+    rows.push(["# PartBridge 替代料推荐报告"].map(q).join(","));
     rows.push(["# 生成时间",m.meta.generatedAt].map(q).join(","));
     rows.push(["# 工具版本",`v${m.meta.appVersion}`].map(q).join(","));
     rows.push(["# 请求编号",m.meta.requestId].map(q).join(","));
@@ -2352,7 +2405,7 @@ function Workbench({original,demoNote,onBack,onSwitchVariant}){
     m.eliminated.forEach(e=>rows.push(["已排除",e.partNumber,e.manufacturer||"","REJECTED","","","","","","",e.reason||""].map(q).join(",")));
     rows.push("");
     rows.push([`# ${DISCLAIMER}`].map(q).join(","));
-    downloadText(`${m.meta.originalPart}_替代推荐.csv`,"\uFEFF"+rows.join("\n"),"text/csv;charset=utf-8");
+    downloadReport(`${m.meta.originalPart}_alternatives.csv`,"\uFEFF"+rows.join("\n"),"text/csv;charset=utf-8");
   };
 
   return(<div className="workbench" style={{maxWidth:1400,margin:"16px auto",padding:"0 20px",display:"grid",gridTemplateColumns:"400px 1fr",gap:18,alignItems:"start"}}>
@@ -2688,12 +2741,14 @@ function App(){
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="#fff" strokeWidth="1.8" fill="none"/><path d="M12 7v10M7 9.5l5 3 5-3" stroke="#fff" strokeWidth="1.5" strokeLinecap="round"/></svg>
         </div>
         <div style={{flex:1}}>
-          <div data-app-version={APP_VERSION} style={{fontSize:17,fontWeight:700,color:C.text}}>AltPart Pro</div>
-          <div style={{fontSize:11,color:C.textMute}}>元器件替代决策智能体 · ezPLM集成</div>
+          <div data-app-version={APP_VERSION} style={{fontSize:17,fontWeight:700,color:C.text}}>元件通 · PartBridge</div>
+          <div style={{fontSize:11,color:C.textMute}}>查询元器件 · 下载设计资源 · 寻找替代料</div>
         </div>
+        <LanguageControl/>
         {page==="workbench"&&<button onClick={()=>setPage("home")} style={{padding:"8px 16px",borderRadius:8,border:`1px solid ${C.border}`,background:"#fff",color:C.textSec,fontSize:13,cursor:"pointer"}}>← 重新搜索</button>}
       </div>
     </header>
+    <TranslationNotice/>
     <main style={{minHeight:"calc(100vh - 130px)"}}>
       {page==="home"&&<HomePage onSubmit={analyze} busy={busy} err={homeErr}/>}
       {page==="variants"&&variantBase&&<VariantPicker base={variantBase}
@@ -2709,7 +2764,7 @@ function App(){
       {page==="workbench"&&original&&<Workbench key={original.partNumber} original={original} demoNote={demoNote} onBack={()=>setPage("home")} onSwitchVariant={v=>analyze(v.pn)}/>}
     </main>
     <footer data-app-version={APP_VERSION} style={{textAlign:"center",padding:"14px",borderTop:`1px solid ${C.borderLight}`,fontSize:12,color:C.textMute,background:"#fff"}}>
-      AltPart Pro · ezPLM元器件库 · 实时行情 · 场景化替代 · 确定性评分
+      元件通 · ezPLM元器件库 · 设计资源 · 实时行情 · 替代料推荐
     </footer>
   </React.Fragment>);
 }

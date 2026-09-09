@@ -1,9 +1,114 @@
+/** @jsx pbElement */
 const {
   useState,
   useEffect,
   useRef
 } = React;
-const APP_VERSION = "7.0.1";
+const I18N = window.PartBridgeI18n;
+function useLocale() {
+  React.useSyncExternalStore(I18N.subscribe, I18N.snapshot, I18N.snapshot);
+  return I18N.language();
+}
+function LocalizedText({
+  text
+}) {
+  const language = useLocale();
+  useEffect(() => {
+    I18N.schedule(text);
+  }, [text, language]);
+  return I18N.read(text);
+}
+const LOCALIZED_ATTRIBUTES = ["title", "placeholder", "aria-label", "alt"];
+const LocalizedHost = React.forwardRef(function LocalizedHost({
+  tag,
+  hostProps,
+  children
+}, ref) {
+  const language = useLocale();
+  const strings = LOCALIZED_ATTRIBUTES.map(key => hostProps[key]);
+  useEffect(() => {
+    strings.forEach(text => {
+      if (typeof text === "string") I18N.schedule(text);
+    });
+  }, [language, ...strings]);
+  const props = {
+    ...hostProps,
+    ref
+  };
+  LOCALIZED_ATTRIBUTES.forEach(key => {
+    if (typeof props[key] === "string") props[key] = I18N.read(props[key]);
+  });
+  return React.createElement(tag, props, children);
+});
+function pbElement(type, props, ...children) {
+  if (typeof type !== "string" || props?.translate === "no" || ["script", "style", "textarea"].includes(type)) return React.createElement(type, props, ...children);
+  const translateChild = (child, index) => Array.isArray(child) ? child.map(translateChild) : I18N.hasChinese(child) ? React.createElement(LocalizedText, {
+    key: `text-${index}`,
+    text: child
+  }) : child;
+  // Option labels must never change the submitted value.
+  if (type === "option" && props?.value === undefined && children.every(c => typeof c === "string")) props = {
+    ...props,
+    value: children.join("")
+  };
+  const localized = children.map(translateChild);
+  if (LOCALIZED_ATTRIBUTES.some(key => I18N.hasChinese(props?.[key]))) {
+    const {
+      key,
+      ref,
+      ...hostProps
+    } = props;
+    return React.createElement(LocalizedHost, {
+      key,
+      ref,
+      tag: type,
+      hostProps
+    }, ...localized);
+  }
+  return React.createElement(type, props, ...localized);
+}
+function LanguageControl() {
+  const language = useLocale();
+  return pbElement("div", {
+    style: {
+      display: "flex",
+      gap: 4
+    },
+    "aria-label": "Language / \u8BED\u8A00",
+    translate: "no"
+  }, [["zh", "中文"], ["en", "English"]].map(([value, label]) => pbElement("button", {
+    key: value,
+    lang: value === "zh" ? "zh-CN" : "en",
+    "aria-pressed": language === value,
+    onClick: () => I18N.setLanguage(value),
+    style: {
+      padding: "7px 10px",
+      borderRadius: 6,
+      border: "1px solid #c2e5d3",
+      background: language === value ? "#e8f5ef" : "#fff",
+      cursor: "pointer"
+    },
+    translate: "no"
+  }, label)));
+}
+function TranslationNotice() {
+  const language = useLocale();
+  if (language !== "en") return null;
+  return pbElement("div", {
+    translate: "no",
+    role: "status",
+    style: {
+      maxWidth: 1400,
+      margin: "0 auto",
+      padding: "6px 24px",
+      fontSize: 11,
+      color: I18N.failedCount() ? "#854f0b" : "#4a6b58"
+    }
+  }, I18N.failedCount() ? pbElement(React.Fragment, null, "Some text could not be translated; its original is shown. ", pbElement("button", {
+    onClick: () => I18N.retry()
+  }, "Retry translation")) : "Database text is automatically translated. Part numbers, values and design files retain their original data.");
+}
+const APP_VERSION = "7.1.0";
 const C = {
   green: "#1a6c4e",
   greenLight: "#e8f5ef",
@@ -521,17 +626,17 @@ function ScoreRing({
     circ = 2 * Math.PI * r,
     offset = circ * (1 - score / 100),
     color = scoreColor(score);
-  return /*#__PURE__*/React.createElement("svg", {
+  return pbElement("svg", {
     width: size,
     height: size
-  }, /*#__PURE__*/React.createElement("circle", {
+  }, pbElement("circle", {
     cx: size / 2,
     cy: size / 2,
     r: r,
     fill: "none",
     stroke: C.borderLight,
     strokeWidth: "4"
-  }), /*#__PURE__*/React.createElement("circle", {
+  }), pbElement("circle", {
     cx: size / 2,
     cy: size / 2,
     r: r,
@@ -542,7 +647,7 @@ function ScoreRing({
     strokeDashoffset: offset,
     strokeLinecap: "round",
     transform: `rotate(-90 ${size / 2} ${size / 2})`
-  }), /*#__PURE__*/React.createElement("text", {
+  }), pbElement("text", {
     x: size / 2,
     y: size / 2 + 1,
     textAnchor: "middle",
@@ -556,7 +661,7 @@ function ScoreRing({
 function LevelBadge({
   level
 }) {
-  return /*#__PURE__*/React.createElement("span", {
+  return pbElement("span", {
     style: {
       padding: "3px 10px",
       borderRadius: 5,
@@ -575,7 +680,7 @@ function SourceTag({
   const isAI = source === "ai_search" || source === "ai_lookup";
   const color = isAI ? C.amber : C.green,
     bg = isAI ? C.amberBg : C.greenLight;
-  return /*#__PURE__*/React.createElement("span", {
+  return pbElement("span", {
     style: {
       fontSize: 10,
       padding: "1px 5px",
@@ -2316,14 +2421,14 @@ function exportKicadSym(sym, meta = {}) {
   // 首部注释：即使属性被工具剥离，注释仍可被人工与脚本读到
   L.push(`; ============================================================`);
   L.push(`; status=${status}`);
-  L.push(`; generator=AltPart Pro v${meta.appVersion || APP_VERSION}`);
+  L.push(`; generator=PartBridge v${meta.appVersion || APP_VERSION}`);
   L.push(`; generated_at=${meta.generatedAt || new Date().toISOString()}`);
   L.push(`; source=${meta.source || "unknown"}`);
   if (meta.sourceUuid) L.push(`; source_uuid=${meta.sourceUuid}`);
   L.push(`; part=${meta.partNumber || ""}  manufacturer=${meta.manufacturer || ""}`);
-  if (status === "NOT_FOR_PRODUCTION") L.push(`; WARNING: 本符号由 AltPart Pro 自动生成，引脚定义未经 datasheet 人工核对，不可直接用于生产。`);
+  if (status === "NOT_FOR_PRODUCTION") L.push(`; WARNING: 本符号由 PartBridge 自动生成，引脚定义未经 datasheet 人工核对，不可直接用于生产。`);
   L.push(`; ============================================================`);
-  L.push(`(kicad_symbol_lib (version 20231120) (generator "AltPart Pro") (generator_version "9.0")`);
+  L.push(`(kicad_symbol_lib (version 20231120) (generator "PartBridge") (generator_version "9.0")`);
   L.push(`  (symbol "${name}"`);
   L.push(`    (exclude_from_sim no) (in_bom yes) (on_board yes)`);
   // 属性字段
@@ -2332,7 +2437,7 @@ function exportKicadSym(sym, meta = {}) {
   if (meta.source) props.push(["AltPart_Source", esc(meta.source), 0, -15.24, "yes"]);
   // ALT-015：风险状态必须随文件持久化，脱离网页后仍可被人工与脚本识别
   props.push(["AltPart_Status", esc(meta.validationState || "NOT_FOR_PRODUCTION"), 0, -17.78, "yes"]);
-  props.push(["AltPart_Generator", esc(`AltPart Pro v${meta.appVersion || APP_VERSION}`), 0, -20.32, "yes"]);
+  props.push(["AltPart_Generator", esc(`PartBridge v${meta.appVersion || APP_VERSION}`), 0, -20.32, "yes"]);
   props.push(["AltPart_GeneratedAt", esc(meta.generatedAt || new Date().toISOString()), 0, -22.86, "yes"]);
   if (meta.sourceUuid) props.push(["AltPart_SourceUUID", esc(meta.sourceUuid), 0, -25.4, "yes"]);
   for (const [k, v, x, y, hide] of props) {
@@ -2385,7 +2490,7 @@ function exportKicadSym(sym, meta = {}) {
 function annotateFootprint(text, meta = {}) {
   if (!text) return text;
   const status = meta.srcFp === "ezplm" || meta.srcFp === "kicad_official" ? "VERIFIED_SOURCE" : "NOT_FOR_PRODUCTION";
-  const head = ["; ============================================================", `; status=${status}`, `; generator=AltPart Pro v${APP_VERSION}`, `; generated_at=${new Date().toISOString()}`, `; source=${meta.srcFp || "unknown"}`, meta.sourceUuid ? `; source_uuid=${meta.sourceUuid}` : "", `; part=${meta.partNumber || ""}  package=${meta.pkg || ""}`, status === "NOT_FOR_PRODUCTION" ? "; WARNING: 本封装依封装名推算生成，焊盘尺寸未经 datasheet 核对，不可直接用于生产。" : "", "; ============================================================"].filter(Boolean).join("\n") + "\n";
+  const head = ["; ============================================================", `; status=${status}`, `; generator=PartBridge v${APP_VERSION}`, `; generated_at=${new Date().toISOString()}`, `; source=${meta.srcFp || "unknown"}`, meta.sourceUuid ? `; source_uuid=${meta.sourceUuid}` : "", `; part=${meta.partNumber || ""}  package=${meta.pkg || ""}`, status === "NOT_FOR_PRODUCTION" ? "; WARNING: 本封装依封装名推算生成，焊盘尺寸未经 datasheet 核对，不可直接用于生产。" : "", "; ============================================================"].filter(Boolean).join("\n") + "\n";
   let out = text;
   if (meta.hasStep && meta.model3dFile) {
     // 移除依赖旧版环境变量的 model 引用，改为同目录相对路径
@@ -2395,6 +2500,14 @@ function annotateFootprint(text, meta = {}) {
     if (last >= 0) out = out.slice(0, last) + modelBlock + out.slice(last);
   }
   return head + out;
+}
+async function downloadReport(filename, text, mime) {
+  try {
+    const translated = await I18N.translateAll(text.split("\n"));
+    downloadText(filename, translated.join("\n"), mime);
+  } catch (error) {
+    alert(error.message || "Translation unavailable. Please retry.");
+  }
 }
 function downloadText(filename, text, mime = "text/plain;charset=utf-8") {
   const blob = new Blob(["\ufeff".length ? text : text], {
@@ -2418,7 +2531,7 @@ function Model3DSVG({
   compact
 }) {
   const g = parsePackage(pkg);
-  if (!g) return /*#__PURE__*/React.createElement(EmptyPreview, {
+  if (!g) return pbElement(EmptyPreview, {
     text: "\u65E0\u5C01\u88C5\u4FE1\u606F"
   });
   const W = 760,
@@ -2443,7 +2556,7 @@ function Model3DSVG({
         xl = cx - w / 2,
         xr = cx + w / 2;
       const ly = cy - h * 0.2 + d * 0.5 * (t - 0.5);
-      leads.push(/*#__PURE__*/React.createElement("rect", {
+      leads.push(pbElement("rect", {
         key: `l${i}`,
         x: xl - 14,
         y: ly,
@@ -2452,7 +2565,7 @@ function Model3DSVG({
         fill: "#c7ccd2",
         rx: 1
       }));
-      leads.push(/*#__PURE__*/React.createElement("rect", {
+      leads.push(pbElement("rect", {
         key: `r${i}`,
         x: xr,
         y: ly - oy * 0.15,
@@ -2463,7 +2576,7 @@ function Model3DSVG({
       }));
     }
   }
-  return /*#__PURE__*/React.createElement("svg", {
+  return pbElement("svg", {
     ref: svgRef,
     viewBox: `0 0 ${W} ${H}`,
     style: {
@@ -2473,19 +2586,19 @@ function Model3DSVG({
       borderRadius: 8,
       border: `1px solid ${C.borderLight}`
     }
-  }, /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("linearGradient", {
+  }, pbElement("defs", null, pbElement("linearGradient", {
     id: "topg",
     x1: "0",
     y1: "0",
     x2: "1",
     y2: "1"
-  }, /*#__PURE__*/React.createElement("stop", {
+  }, pbElement("stop", {
     offset: "0%",
     stopColor: "#4a6357"
-  }), /*#__PURE__*/React.createElement("stop", {
+  }), pbElement("stop", {
     offset: "100%",
     stopColor: "#33463d"
-  }))), [...Array(9)].map((_, i) => /*#__PURE__*/React.createElement("line", {
+  }))), [...Array(9)].map((_, i) => pbElement("line", {
     key: `gx${i}`,
     x1: cx - 260 + i * 65,
     y1: cy + 40,
@@ -2493,30 +2606,30 @@ function Model3DSVG({
     y2: cy + 8,
     stroke: "#dde5e0",
     strokeWidth: "1"
-  })), /*#__PURE__*/React.createElement("ellipse", {
+  })), pbElement("ellipse", {
     cx: cx + ox * 0.5,
     cy: cy + 10,
     rx: w * 0.66,
     ry: 10,
     fill: "#00000015"
-  }), leads, /*#__PURE__*/React.createElement("rect", {
+  }), leads, pbElement("rect", {
     x: cx - w / 2,
     y: cy - h,
     width: w,
     height: h,
     fill: "#2c3e35"
-  }), /*#__PURE__*/React.createElement("polygon", {
+  }), pbElement("polygon", {
     points: top,
     fill: "url(#topg)"
-  }), /*#__PURE__*/React.createElement("polygon", {
+  }), pbElement("polygon", {
     points: right,
     fill: "#1f2d26"
-  }), /*#__PURE__*/React.createElement("circle", {
+  }), pbElement("circle", {
     cx: cx - w / 2 + 16,
     cy: cy - h / 2,
     r: 4.5,
     fill: "#8fd6b4"
-  }), /*#__PURE__*/React.createElement("text", {
+  }), pbElement("text", {
     x: cx + ox * 0.5,
     y: H - 18,
     textAnchor: "middle",
@@ -2528,7 +2641,7 @@ function Model3DSVG({
 function EmptyPreview({
   text
 }) {
-  return /*#__PURE__*/React.createElement("div", {
+  return pbElement("div", {
     style: {
       padding: "60px",
       textAlign: "center",
@@ -2536,12 +2649,12 @@ function EmptyPreview({
       background: C.bgSoft,
       borderRadius: 8
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 32,
       marginBottom: 8
     }
-  }, "\uD83D\uDCD0"), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCD0"), pbElement("div", {
     style: {
       fontSize: 13
     }
@@ -3047,7 +3160,7 @@ function Step3DViewer({
       setMsg(e instanceof Error ? e.message : String(e));
     }
   }
-  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  return pbElement("div", null, pbElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -3056,7 +3169,7 @@ function Step3DViewer({
       marginBottom: 8,
       justifyContent: compact ? "center" : "flex-start"
     }
-  }, (phase === "idle" || phase === "error") && /*#__PURE__*/React.createElement("button", {
+  }, (phase === "idle" || phase === "error") && pbElement("button", {
     onClick: load,
     style: {
       padding: compact ? "7px 14px" : "9px 18px",
@@ -3068,7 +3181,7 @@ function Step3DViewer({
       fontWeight: 600,
       cursor: "pointer"
     }
-  }, phase === "error" ? "重试加载" : "▶ 加载 3D 模型"), !compact && /*#__PURE__*/React.createElement("a", {
+  }, phase === "error" ? "重试加载" : "▶ 加载 3D 模型"), !compact && pbElement("a", {
     href: proxyRes(stepUrl),
     target: "_blank",
     rel: "noreferrer",
@@ -3082,27 +3195,27 @@ function Step3DViewer({
       fontSize: 12,
       textDecoration: "none"
     }
-  }, "\u2B07 \u4E0B\u8F7D STEP \u6E90\u6587\u4EF6"), !compact && /*#__PURE__*/React.createElement("span", {
+  }, "\u2B07 \u4E0B\u8F7D STEP \u6E90\u6587\u4EF6"), !compact && pbElement("span", {
     style: {
       fontSize: 11,
       color: C.textMute,
       flex: 1,
       minWidth: 200
     }
-  }, fileName ? `${fileName} · ` : "", "\u9700\u4E0B\u8F7D\u7EA6 7.6MB \u7684 3D \u5185\u6838\u4E0E STEP \u6587\u4EF6\uFF0C\u6545\u624B\u52A8\u89E6\u53D1\u3002")), compact && phase === "idle" && /*#__PURE__*/React.createElement("div", {
+  }, fileName ? `${fileName} · ` : "", "\u9700\u4E0B\u8F7D\u7EA6 7.6MB \u7684 3D \u5185\u6838\u4E0E STEP \u6587\u4EF6\uFF0C\u6545\u624B\u52A8\u89E6\u53D1\u3002")), compact && phase === "idle" && pbElement("div", {
     style: {
       fontSize: 10,
       color: C.textMute,
       textAlign: "center",
       marginBottom: 6
     }
-  }, "\u7EA6 7.6MB \u5185\u6838\uFF0C\u6309\u9700\u52A0\u8F7D"), phase === "loading" && /*#__PURE__*/React.createElement("div", {
+  }, "\u7EA6 7.6MB \u5185\u6838\uFF0C\u6309\u9700\u52A0\u8F7D"), phase === "loading" && pbElement("div", {
     style: {
       padding: compact ? "24px 8px" : "40px",
       textAlign: "center",
       color: C.textMute
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       width: 28,
       height: 28,
@@ -3112,11 +3225,11 @@ function Step3DViewer({
       animation: "spin 0.8s linear infinite",
       margin: "0 auto 10px"
     }
-  }), /*#__PURE__*/React.createElement("div", {
+  }), pbElement("div", {
     style: {
       fontSize: 12
     }
-  }, msg)), phase === "error" && /*#__PURE__*/React.createElement("div", {
+  }, msg)), phase === "error" && pbElement("div", {
     style: {
       padding: "12px 14px",
       borderRadius: 8,
@@ -3125,13 +3238,13 @@ function Step3DViewer({
       color: "#a0302a",
       fontSize: 12
     }
-  }, "3D \u9884\u89C8\u5931\u8D25\uFF1A", msg, "\u3002\u53EF\u4E0B\u8F7D STEP \u6E90\u6587\u4EF6\u7528 KiCad / FreeCAD \u6253\u5F00\u3002"), phase === "ready" && /*#__PURE__*/React.createElement("div", {
+  }, "3D \u9884\u89C8\u5931\u8D25\uFF1A", msg, "\u3002\u53EF\u4E0B\u8F7D STEP \u6E90\u6587\u4EF6\u7528 KiCad / FreeCAD \u6253\u5F00\u3002"), phase === "ready" && pbElement("div", {
     style: {
       fontSize: 11,
       color: C.textMute,
       marginBottom: 6
     }
-  }, "\u5DF2\u6E32\u67D3 ", meshCount, " \u7F51\u683C \xB7 ", (stats3d?.tri ?? 0).toLocaleString(), " \u4E09\u89D2\u5F62 \xB7 \u89E3\u6790 ", stats3d?.parseMs ?? 0, "ms", stats3d && !stats3d.env && " · 环境贴图未加载(质感降级)", " \xB7 v", APP_VERSION, " \xB7 \u5DE6\u952E\u65CB\u8F6C / \u6EDA\u8F6E\u7F29\u653E"), /*#__PURE__*/React.createElement("div", {
+  }, "\u5DF2\u6E32\u67D3 ", meshCount, " \u7F51\u683C \xB7 ", (stats3d?.tri ?? 0).toLocaleString(), " \u4E09\u89D2\u5F62 \xB7 \u89E3\u6790 ", stats3d?.parseMs ?? 0, "ms", stats3d && !stats3d.env && " · 环境贴图未加载(质感降级)", " \xB7 v", APP_VERSION, " \xB7 \u5DE6\u952E\u65CB\u8F6C / \u6EDA\u8F6E\u7F29\u653E"), pbElement("div", {
     ref: hostRef,
     style: {
       borderRadius: 8,
@@ -3431,7 +3544,7 @@ function GraphicsPanel({
   };
   const srcBadge = k => {
     const m = SRC_BADGE[k] || SRC_BADGE.synth;
-    return /*#__PURE__*/React.createElement("span", {
+    return pbElement("span", {
       title: m.tip,
       style: {
         fontSize: 10,
@@ -3444,7 +3557,7 @@ function GraphicsPanel({
       }
     }, m.t);
   };
-  const badge = (ok, label) => /*#__PURE__*/React.createElement("span", {
+  const badge = (ok, label) => pbElement("span", {
     title: ok ? "由本系统解析绘制，字体与隐藏属性等细节可能与 KiCad 显示存在差异，以源文件为准" : "ezPLM 未提供该资源，此图依封装名推算生成，非精确制造数据",
     style: {
       fontSize: 10,
@@ -3456,7 +3569,7 @@ function GraphicsPanel({
       border: `1px solid ${ok ? C.greenMid : "#f0dca0"}`
     }
   }, ok ? `✓ ${label}` : "⚠ 示意渲染");
-  const card = (title, extra, body, foot, onZoom, dl) => /*#__PURE__*/React.createElement("div", {
+  const card = (title, extra, body, foot, onZoom, dl) => pbElement("div", {
     style: {
       border: `1px solid ${C.border}`,
       borderRadius: 12,
@@ -3466,7 +3579,7 @@ function GraphicsPanel({
       flexDirection: "column",
       minWidth: 0
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -3474,13 +3587,13 @@ function GraphicsPanel({
       gap: 8,
       marginBottom: 8
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       fontSize: 14,
       fontWeight: 700,
       color: C.text
     }
-  }, title), extra), /*#__PURE__*/React.createElement("div", {
+  }, title), extra), pbElement("div", {
     style: {
       flex: 1,
       minHeight: 240,
@@ -3488,7 +3601,7 @@ function GraphicsPanel({
       alignItems: "center",
       justifyContent: "center"
     }
-  }, body), /*#__PURE__*/React.createElement("div", {
+  }, body), pbElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -3497,12 +3610,12 @@ function GraphicsPanel({
       marginTop: 8,
       minHeight: 22
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       fontSize: 10,
       color: C.textMute
     }
-  }, foot), onZoom && /*#__PURE__*/React.createElement("button", {
+  }, foot), onZoom && pbElement("button", {
     onClick: onZoom,
     style: {
       padding: "3px 10px",
@@ -3514,7 +3627,7 @@ function GraphicsPanel({
       cursor: "pointer",
       whiteSpace: "nowrap"
     }
-  }, "\u26F6 \u653E\u5927")), dl && /*#__PURE__*/React.createElement("div", {
+  }, "\u26F6 \u653E\u5927")), dl && pbElement("div", {
     style: {
       marginTop: 8,
       paddingTop: 8,
@@ -3548,19 +3661,19 @@ function GraphicsPanel({
     // 仅来自权威库的符号才算已验证
     validationState: srcSym === "ezplm" || srcSym === "kicad_official" ? "VERIFIED_SOURCE" : "NOT_FOR_PRODUCTION"
   });
-  const dlSymbol = /*#__PURE__*/React.createElement(React.Fragment, null, srcSym === "ezplm" && d?.symbolUrl && /*#__PURE__*/React.createElement(DownloadButton, {
+  const dlSymbol = pbElement(React.Fragment, null, srcSym === "ezplm" && d?.symbolUrl && pbElement(DownloadButton, {
     label: "\u539F\u59CB\u7B26\u53F7",
     filename: d.symbolFileName || `${pn}.kicad_sym`,
     source: "ezplm",
     verified: true,
     href: proxyRes(d.symbolUrl)
-  }), srcSym === "kicad_official" && extUrl.symbol && /*#__PURE__*/React.createElement(DownloadButton, {
+  }), srcSym === "kicad_official" && extUrl.symbol && pbElement(DownloadButton, {
     label: "\u5B98\u65B9\u7B26\u53F7",
     filename: `${pn}.kicad_sym`,
     source: "kicad",
     verified: true,
     href: extUrl.symbol
-  }), ksym && /*#__PURE__*/React.createElement(DownloadButton, {
+  }), ksym && pbElement(DownloadButton, {
     label: "\u5BFC\u51FA .kicad_sym",
     filename: `${pn}.kicad_sym`,
     source: srcSym === "ezplm" || srcSym === "kicad_official" ? "generated" : "ai",
@@ -3568,19 +3681,19 @@ function GraphicsPanel({
     title: "\u5BFC\u51FA\u4E3A KiCad 7/8/9 \u901A\u7528\u683C\u5F0F\uFF0C\u542B\u6765\u6E90\u6807\u6CE8",
     onDownload: () => downloadText(`${pn}.kicad_sym`, exportKicadSym(ksym, symMeta()), "application/octet-stream")
   }));
-  const dlFootprint = /*#__PURE__*/React.createElement(React.Fragment, null, srcFp === "ezplm" && d?.footprintFileUrl && /*#__PURE__*/React.createElement(DownloadButton, {
+  const dlFootprint = pbElement(React.Fragment, null, srcFp === "ezplm" && d?.footprintFileUrl && pbElement(DownloadButton, {
     label: "\u539F\u59CB\u5C01\u88C5",
     filename: d.footprintFileName || "footprint.kicad_mod",
     source: "ezplm",
     verified: true,
     href: proxyRes(d.footprintFileUrl)
-  }), srcFp === "kicad_official" && extUrl.footprint && /*#__PURE__*/React.createElement(DownloadButton, {
+  }), srcFp === "kicad_official" && extUrl.footprint && pbElement(DownloadButton, {
     label: "\u5B98\u65B9\u5C01\u88C5",
     filename: `${pkg || pn}.kicad_mod`,
     source: "kicad",
     verified: true,
     href: extUrl.footprint
-  }), fpText && /*#__PURE__*/React.createElement(DownloadButton, {
+  }), fpText && pbElement(DownloadButton, {
     label: "\u5BFC\u51FA .kicad_mod",
     filename: `${(pkg || pn).replace(/[^\w.\-]/g, "_")}.kicad_mod`,
     source: srcFp === "ezplm" || srcFp === "kicad_official" ? "generated" : "ai",
@@ -3595,31 +3708,31 @@ function GraphicsPanel({
       sourceUuid: d?.ezplmId || ""
     }), "application/octet-stream")
   }));
-  const dl3D = /*#__PURE__*/React.createElement(React.Fragment, null, d?.model3dUrl && /*#__PURE__*/React.createElement(DownloadButton, {
+  const dl3D = pbElement(React.Fragment, null, d?.model3dUrl && pbElement(DownloadButton, {
     label: "STEP \u6A21\u578B",
     filename: d.model3dFileName || `${pn}.step`,
     source: "ezplm",
     verified: true,
     href: proxyRes(d.model3dUrl)
-  }), !d?.model3dUrl && extUrl.model3d && /*#__PURE__*/React.createElement(DownloadButton, {
+  }), !d?.model3dUrl && extUrl.model3d && pbElement(DownloadButton, {
     label: "STEP \u6A21\u578B",
     filename: `${pkg || pn}.step`,
     source: "kicad",
     verified: true,
     href: extUrl.model3d
-  }), !d?.model3dUrl && !extUrl.model3d && /*#__PURE__*/React.createElement("span", {
+  }), !d?.model3dUrl && !extUrl.model3d && pbElement("span", {
     style: {
       fontSize: 10,
       color: C.textMute
     }
   }, "\u65E0\u53EF\u4E0B\u8F7D\u7684 3D \u6A21\u578B"));
-  if (loading) return /*#__PURE__*/React.createElement("div", {
+  if (loading) return pbElement("div", {
     style: {
       padding: "60px",
       textAlign: "center",
       color: C.textMute
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       width: 28,
       height: 28,
@@ -3630,20 +3743,20 @@ function GraphicsPanel({
       margin: "0 auto 10px"
     }
   }), "\u6B63\u5728\u52A0\u8F7D KiCad \u5E93\u6587\u4EF6\u2026");
-  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  return pbElement("div", null, pbElement("div", {
     className: "graphics-grid",
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(3,minmax(0,1fr))",
       gap: 14
     }
-  }, card("🔣 原理图符号", /*#__PURE__*/React.createElement("div", {
+  }, card("🔣 原理图符号", pbElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
       gap: 6
     }
-  }, ksym?.maxUnit > 1 && /*#__PURE__*/React.createElement("select", {
+  }, ksym?.maxUnit > 1 && pbElement("select", {
     value: unit,
     onChange: e => setUnit(Number(e.target.value)),
     style: {
@@ -3657,14 +3770,14 @@ function GraphicsPanel({
     }
   }, Array.from({
     length: ksym.maxUnit
-  }, (_, i) => i + 1).map(u => /*#__PURE__*/React.createElement("option", {
+  }, (_, i) => i + 1).map(u => pbElement("option", {
     key: u,
     value: u
-  }, ksym.unitLabels?.[u] || `单元 ${u}`))), srcBadge(srcSym)), /*#__PURE__*/React.createElement("div", {
+  }, ksym.unitLabels?.[u] || `单元 ${u}`))), srcBadge(srcSym)), pbElement("div", {
     style: {
       width: "100%"
     }
-  }, /*#__PURE__*/React.createElement("svg", {
+  }, pbElement("svg", {
     ref: symRef,
     viewBox: "0 0 800 520",
     style: {
@@ -3674,12 +3787,12 @@ function GraphicsPanel({
       borderRadius: 8,
       border: `1px solid ${C.borderLight}`
     }
-  }), srcSym === "synth" && !aiTry && /*#__PURE__*/React.createElement("div", {
+  }), srcSym === "synth" && !aiTry && pbElement("div", {
     style: {
       textAlign: "center",
       marginTop: 8
     }
-  }, /*#__PURE__*/React.createElement("button", {
+  }, pbElement("button", {
     onClick: tryAiPinout,
     disabled: aiBusy,
     style: {
@@ -3691,13 +3804,13 @@ function GraphicsPanel({
       fontSize: 11,
       cursor: aiBusy ? "wait" : "pointer"
     }
-  }, aiBusy ? "推断中…" : "⚠ 尝试用 AI 推断引脚名（不可靠，需核对 datasheet）"), /*#__PURE__*/React.createElement("div", {
+  }, aiBusy ? "推断中…" : "⚠ 尝试用 AI 推断引脚名（不可靠，需核对 datasheet）"), pbElement("div", {
     style: {
       fontSize: 10,
       color: C.textMute,
       marginTop: 4
     }
-  }, "\u5404\u6743\u5A01\u6765\u6E90\u5747\u65E0\u6B64\u5668\u4EF6\u7B26\u53F7\u3002AI \u63A8\u65AD\u7684\u5F15\u811A\u540D\u66FE\u51FA\u73B0\u6574\u4EFD\u7F16\u9020\u7684\u60C5\u51B5\uFF0C\u4EC5\u4F9B\u53C2\u8003\u65B9\u5411\u3002"))), pdfWarn ? `⚠ ${pdfWarn}` : kskip > 0 ? `⚠ ${kskip} 个图元未渲染` : "滚轮缩放 · 拖拽平移", () => setZoomed("symbol"), dlSymbol), card("📐 PCB 封装", srcBadge(srcFp), /*#__PURE__*/React.createElement("svg", {
+  }, "\u5404\u6743\u5A01\u6765\u6E90\u5747\u65E0\u6B64\u5668\u4EF6\u7B26\u53F7\u3002AI \u63A8\u65AD\u7684\u5F15\u811A\u540D\u66FE\u51FA\u73B0\u6574\u4EFD\u7F16\u9020\u7684\u60C5\u51B5\uFF0C\u4EC5\u4F9B\u53C2\u8003\u65B9\u5411\u3002"))), pdfWarn ? `⚠ ${pdfWarn}` : kskip > 0 ? `⚠ ${kskip} 个图元未渲染` : "滚轮缩放 · 拖拽平移", () => setZoomed("symbol"), dlSymbol), card("📐 PCB 封装", srcBadge(srcFp), pbElement("svg", {
     ref: fpRef,
     viewBox: "0 0 800 520",
     style: {
@@ -3707,7 +3820,7 @@ function GraphicsPanel({
       borderRadius: 8,
       border: `1px solid ${C.borderLight}`
     }
-  }), "滚轮缩放 · 拖拽平移", () => setZoomed("footprint"), dlFootprint), card("🧊 3D 模型", d?.model3dUrl ? /*#__PURE__*/React.createElement("span", {
+  }), "滚轮缩放 · 拖拽平移", () => setZoomed("footprint"), dlFootprint), card("🧊 3D 模型", d?.model3dUrl ? pbElement("span", {
     style: {
       fontSize: 10,
       padding: "2px 7px",
@@ -3716,25 +3829,25 @@ function GraphicsPanel({
       color: C.green,
       border: `1px solid ${C.greenMid}`
     }
-  }, "\u2713 \u771F\u5B9E STEP") : badge(false, ""), d?.model3dUrl ? /*#__PURE__*/React.createElement("div", {
+  }, "\u2713 \u771F\u5B9E STEP") : badge(false, ""), d?.model3dUrl ? pbElement("div", {
     style: {
       width: "100%"
     }
-  }, /*#__PURE__*/React.createElement(Step3DViewer, {
+  }, pbElement(Step3DViewer, {
     stepUrl: d.model3dUrl,
     fileName: d.model3dFileName,
     compact: true
-  })) : /*#__PURE__*/React.createElement(Model3DSVG, {
+  })) : pbElement(Model3DSVG, {
     pkg: pkg,
     compact: true
-  }), d?.model3dUrl ? "点「加载 3D 模型」后可旋转" : "ezPLM 未提供 STEP", null, dl3D)), /*#__PURE__*/React.createElement("div", {
+  }), d?.model3dUrl ? "点「加载 3D 模型」后可旋转" : "ezPLM 未提供 STEP", null, dl3D)), pbElement("div", {
     style: {
       textAlign: "center",
       fontSize: 11,
       color: C.textMute,
       marginTop: 10
     }
-  }, "\uD83D\uDCA1 \u70B9\u51FB\u7B26\u53F7\u5F15\u811A\u6216\u5C01\u88C5\u710A\u76D8\u53EF\u9AD8\u4EAE\u5BF9\u5E94\u4F4D\u7F6E", pin != null ? ` · 当前选中 Pin ${pin}` : "", pin != null && /*#__PURE__*/React.createElement("button", {
+  }, "\uD83D\uDCA1 \u70B9\u51FB\u7B26\u53F7\u5F15\u811A\u6216\u5C01\u88C5\u710A\u76D8\u53EF\u9AD8\u4EAE\u5BF9\u5E94\u4F4D\u7F6E", pin != null ? ` · 当前选中 Pin ${pin}` : "", pin != null && pbElement("button", {
     onClick: () => setPin(null),
     style: {
       marginLeft: 8,
@@ -3745,7 +3858,7 @@ function GraphicsPanel({
       fontSize: 11,
       cursor: "pointer"
     }
-  }, "\u6E05\u9664")), zoomed && zoomed !== "model3d" && /*#__PURE__*/React.createElement("div", {
+  }, "\u6E05\u9664")), zoomed && zoomed !== "model3d" && pbElement("div", {
     onClick: () => setZoomed(null),
     style: {
       position: "fixed",
@@ -3757,7 +3870,7 @@ function GraphicsPanel({
       justifyContent: "center",
       padding: 24
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     onClick: e => e.stopPropagation(),
     style: {
       background: "#fff",
@@ -3765,19 +3878,19 @@ function GraphicsPanel({
       padding: 16,
       width: "min(1000px,95vw)"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
       alignItems: "center",
       marginBottom: 10
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       fontSize: 15,
       fontWeight: 700
     }
-  }, zoomed === "symbol" ? "🔣 原理图符号" : "📐 PCB 封装", " \xB7 ", pn), /*#__PURE__*/React.createElement("button", {
+  }, zoomed === "symbol" ? "🔣 原理图符号" : "📐 PCB 封装", " \xB7 ", pn), pbElement("button", {
     onClick: () => setZoomed(null),
     style: {
       width: 30,
@@ -3787,7 +3900,7 @@ function GraphicsPanel({
       background: "#fff",
       cursor: "pointer"
     }
-  }, "\u2715")), zoomed === "symbol" ? /*#__PURE__*/React.createElement("svg", {
+  }, "\u2715")), zoomed === "symbol" ? pbElement("svg", {
     ref: bigSymRef,
     viewBox: "0 0 800 520",
     style: {
@@ -3797,7 +3910,7 @@ function GraphicsPanel({
       borderRadius: 8,
       border: `1px solid ${C.borderLight}`
     }
-  }) : /*#__PURE__*/React.createElement("svg", {
+  }) : pbElement("svg", {
     ref: bigFpRef,
     viewBox: "0 0 800 520",
     style: {
@@ -3807,7 +3920,7 @@ function GraphicsPanel({
       borderRadius: 8,
       border: `1px solid ${C.borderLight}`
     }
-  }), /*#__PURE__*/React.createElement("div", {
+  }), pbElement("div", {
     style: {
       textAlign: "center",
       fontSize: 11,
@@ -3875,9 +3988,9 @@ function DownloadButton({
     fontFamily: "inherit",
     lineHeight: 1
   };
-  const inner = /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+  const inner = pbElement(React.Fragment, null, pbElement("span", {
     "aria-hidden": "true"
-  }, "\u2B07"), /*#__PURE__*/React.createElement("span", null, label), BADGE && /*#__PURE__*/React.createElement("span", {
+  }, "\u2B07"), pbElement("span", null, label), BADGE && pbElement("span", {
     style: {
       fontSize: 9,
       padding: "1px 5px",
@@ -3887,14 +4000,14 @@ function DownloadButton({
       border: `1px solid ${BADGE.b}`,
       fontWeight: 600
     }
-  }, BADGE.t), source === "generated" || source === "ai" ? /*#__PURE__*/React.createElement("span", {
+  }, BADGE.t), source === "generated" || source === "ai" ? pbElement("span", {
     style: {
       fontSize: 9,
       color: "#b8860b"
     }
   }, "NOT_FOR_PRODUCTION") : null);
   const aria = `下载 ${filename || label}${verified === false ? "（未验证）" : ""}`;
-  return href ? /*#__PURE__*/React.createElement("a", {
+  return href ? pbElement("a", {
     href: href,
     target: "_blank",
     rel: "noreferrer",
@@ -3902,7 +4015,7 @@ function DownloadButton({
     style: base,
     "aria-label": aria,
     title: title
-  }, inner) : /*#__PURE__*/React.createElement("button", {
+  }, inner) : pbElement("button", {
     onClick: onDownload,
     style: base,
     "aria-label": aria,
@@ -4005,7 +4118,7 @@ function PartDetailModal({
   const params = d?.parameters || [];
   const downloads = d?.downloads || [];
   const refs = d?.referenceDesigns || [];
-  return /*#__PURE__*/React.createElement("div", {
+  return pbElement("div", {
     onClick: onClose,
     style: {
       position: "fixed",
@@ -4019,7 +4132,7 @@ function PartDetailModal({
       overflowY: "auto",
       animation: "fadeUp 0.2s ease both"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     ref: dialogRef,
     role: "dialog",
     "aria-modal": "true",
@@ -4032,7 +4145,7 @@ function PartDetailModal({
       width: "100%",
       boxShadow: "0 24px 64px rgba(0,0,0,0.25)"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       padding: "18px 24px",
       borderBottom: `1px solid ${C.borderLight}`,
@@ -4040,11 +4153,11 @@ function PartDetailModal({
       alignItems: "flex-start",
       gap: 14
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       flex: 1
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -4052,7 +4165,7 @@ function PartDetailModal({
       flexWrap: "wrap",
       marginBottom: 4
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     id: "part-detail-title",
     style: {
       fontSize: 22,
@@ -4060,7 +4173,7 @@ function PartDetailModal({
       fontFamily: "'DM Mono',monospace",
       color: C.text
     }
-  }, pn), d?.inPLM && /*#__PURE__*/React.createElement("span", {
+  }, pn), d?.inPLM && pbElement("span", {
     style: {
       padding: "2px 8px",
       borderRadius: 4,
@@ -4070,40 +4183,40 @@ function PartDetailModal({
       fontWeight: 600,
       border: `1px solid ${C.greenMid}`
     }
-  }, "\u2713 ezPLM \u5DF2\u6536\u5F55")), /*#__PURE__*/React.createElement("div", {
+  }, "\u2713 ezPLM \u5DF2\u6536\u5F55")), pbElement("div", {
     style: {
       fontSize: 13,
       color: C.textMute
     }
-  }, d?.manufacturer || rec?.manufacturer), d?.description && /*#__PURE__*/React.createElement("div", {
+  }, d?.manufacturer || rec?.manufacturer), d?.description && pbElement("div", {
     style: {
       fontSize: 13,
       color: C.textSec,
       marginTop: 4
     }
-  }, d.description)), m && m.priceUSD1 != null && /*#__PURE__*/React.createElement("div", {
+  }, d.description)), m && m.priceUSD1 != null && pbElement("div", {
     style: {
       textAlign: "right",
       minWidth: 130
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 11,
       color: C.textMute
     }
-  }, "\u53C2\u8003\u4EF7\u683C"), /*#__PURE__*/React.createElement("div", {
+  }, "\u53C2\u8003\u4EF7\u683C"), pbElement("div", {
     style: {
       fontSize: 26,
       fontWeight: 700,
       color: C.green,
       fontFamily: "'DM Mono',monospace"
     }
-  }, "$", m.priceUSD1), /*#__PURE__*/React.createElement("div", {
+  }, "$", m.priceUSD1), pbElement("div", {
     style: {
       fontSize: 12,
       color: m.stock === "有货" || m.stock === "充足" ? C.green : C.amber
     }
-  }, m.stock, m.stockQty ? ` · ${m.stockQty.toLocaleString()}` : "")), /*#__PURE__*/React.createElement("button", {
+  }, m.stock, m.stockQty ? ` · ${m.stockQty.toLocaleString()}` : "")), pbElement("button", {
     onClick: onClose,
     style: {
       width: 32,
@@ -4115,13 +4228,13 @@ function PartDetailModal({
       cursor: "pointer",
       color: C.textSec
     }
-  }, "\u2715")), loading && /*#__PURE__*/React.createElement("div", {
+  }, "\u2715")), loading && pbElement("div", {
     style: {
       padding: "60px",
       textAlign: "center",
       color: C.textMute
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       width: 32,
       height: 32,
@@ -4131,27 +4244,27 @@ function PartDetailModal({
       animation: "spin 0.8s linear infinite",
       margin: "0 auto 12px"
     }
-  }), "\u6B63\u5728\u52A0\u8F7D\u5668\u4EF6\u8BE6\u60C5\u4E0E\u5B9E\u65F6\u884C\u60C5\u2026"), !loading && !d?.inPLM && /*#__PURE__*/React.createElement("div", {
+  }), "\u6B63\u5728\u52A0\u8F7D\u5668\u4EF6\u8BE6\u60C5\u4E0E\u5B9E\u65F6\u884C\u60C5\u2026"), !loading && !d?.inPLM && pbElement("div", {
     style: {
       padding: "40px",
       textAlign: "center",
       color: C.textMute
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 36,
       marginBottom: 10
     }
-  }, "\uD83D\uDCED"), /*#__PURE__*/React.createElement("p", {
+  }, "\uD83D\uDCED"), pbElement("p", {
     style: {
       fontSize: 14,
       marginBottom: 6
     }
-  }, "\u8BE5\u5668\u4EF6\u672A\u6536\u5F55\u4E8E ezPLM \u5143\u5668\u4EF6\u5E93"), m && m.priceUSD1 != null && /*#__PURE__*/React.createElement("p", {
+  }, "\u8BE5\u5668\u4EF6\u672A\u6536\u5F55\u4E8E ezPLM \u5143\u5668\u4EF6\u5E93"), m && m.priceUSD1 != null && pbElement("p", {
     style: {
       fontSize: 12
     }
-  }, "\u4F46\u5DF2\u83B7\u53D6\u5230\u5E02\u573A\u884C\u60C5\uFF0C\u89C1\u4E0A\u65B9\u4EF7\u683C")), !loading && d?.inPLM && (d.blockedResources || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, "\u4F46\u5DF2\u83B7\u53D6\u5230\u5E02\u573A\u884C\u60C5\uFF0C\u89C1\u4E0A\u65B9\u4EF7\u683C")), !loading && d?.inPLM && (d.blockedResources || []).length > 0 && pbElement("div", {
     style: {
       margin: "0 24px",
       padding: "8px 12px",
@@ -4161,14 +4274,14 @@ function PartDetailModal({
       color: "#854f0b",
       fontSize: 11
     }
-  }, "\u26A0 \u6709 ", d.blockedResources.length, " \u9879\u8D44\u6E90\u56E0\u4E0E\u5F53\u524D\u5668\u4EF6\u8EAB\u4EFD\u4E0D\u7B26\u5DF2\u88AB\u62E6\u622A\uFF08", d.blockedResources.map(b => b.fname || b.type).join("、"), "\uFF09\u3002 \u8FD9\u4E9B\u6587\u4EF6\u5C5E\u4E8E\u5176\u5B83\u578B\u53F7\u6216\u5382\u5546\uFF0C\u663E\u793A\u51FA\u6765\u4F1A\u8BEF\u5BFC\u9009\u578B\u3002"), !loading && d?.inPLM && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  }, "\u26A0 \u6709 ", d.blockedResources.length, " \u9879\u8D44\u6E90\u56E0\u4E0E\u5F53\u524D\u5668\u4EF6\u8EAB\u4EFD\u4E0D\u7B26\u5DF2\u88AB\u62E6\u622A\uFF08", d.blockedResources.map(b => b.fname || b.type).join("、"), "\uFF09\u3002 \u8FD9\u4E9B\u6587\u4EF6\u5C5E\u4E8E\u5176\u5B83\u578B\u53F7\u6216\u5382\u5546\uFF0C\u663E\u793A\u51FA\u6765\u4F1A\u8BEF\u5BFC\u9009\u578B\u3002"), !loading && d?.inPLM && pbElement("div", null, pbElement("div", {
     style: {
       display: "flex",
       gap: 2,
       padding: "0 24px",
       borderBottom: `1px solid ${C.borderLight}`
     }
-  }, [["specs", "技术规格"], ["graphics", "eCAD库"], ["suppliers", "供应商报价"], ["downloads", "资源下载"], ["refs", "参考设计"]].map(([k, l]) => /*#__PURE__*/React.createElement("button", {
+  }, [["specs", "技术规格"], ["graphics", "eCAD库"], ["suppliers", "供应商报价"], ["downloads", "资源下载"], ["refs", "参考设计"]].map(([k, l]) => pbElement("button", {
     key: k,
     onClick: () => setTab(k),
     style: {
@@ -4181,17 +4294,17 @@ function PartDetailModal({
       fontWeight: tab === k ? 700 : 400,
       cursor: "pointer"
     }
-  }, l, k === "suppliers" && offers.length > 0 ? ` (${offers.length})` : "", k === "downloads" && downloads.length > 0 ? ` (${downloads.length})` : "", k === "refs" && refs.length > 0 ? ` (${refs.length})` : ""))), /*#__PURE__*/React.createElement("div", {
+  }, l, k === "suppliers" && offers.length > 0 ? ` (${offers.length})` : "", k === "downloads" && downloads.length > 0 ? ` (${downloads.length})` : "", k === "refs" && refs.length > 0 ? ` (${refs.length})` : ""))), pbElement("div", {
     style: {
       padding: "18px 24px"
     }
-  }, tab === "specs" && (params.length ? /*#__PURE__*/React.createElement("div", {
+  }, tab === "specs" && (params.length ? pbElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(2,1fr)",
       gap: "0 24px"
     }
-  }, params.map(p => /*#__PURE__*/React.createElement("div", {
+  }, params.map(p => pbElement("div", {
     key: p.id,
     style: {
       display: "flex",
@@ -4200,35 +4313,35 @@ function PartDetailModal({
       borderBottom: `1px solid ${C.borderLight}`,
       fontSize: 13
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       color: C.textSec
     }
-  }, p.name), /*#__PURE__*/React.createElement("span", {
+  }, p.name), pbElement("span", {
     style: {
       fontFamily: "'DM Mono',monospace",
       fontWeight: 600,
       textAlign: "right"
     }
-  }, fmtVal(p.value, p.unit))))) : /*#__PURE__*/React.createElement("p", {
+  }, fmtVal(p.value, p.unit))))) : pbElement("p", {
     style: {
       fontSize: 13,
       color: C.textMute
     }
-  }, "\u6682\u65E0\u53C2\u6570\u6570\u636E")), tab === "graphics" && /*#__PURE__*/React.createElement(GraphicsPanel, {
+  }, "\u6682\u65E0\u53C2\u6570\u6570\u636E")), tab === "graphics" && pbElement(GraphicsPanel, {
     d: d,
     pn: pn
-  }), tab === "suppliers" && /*#__PURE__*/React.createElement("div", null, offers.length ? /*#__PURE__*/React.createElement("table", {
+  }), tab === "suppliers" && pbElement("div", null, offers.length ? pbElement("table", {
     style: {
       width: "100%",
       borderCollapse: "collapse",
       fontSize: 12
     }
-  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+  }, pbElement("thead", null, pbElement("tr", {
     style: {
       background: C.greenLight
     }
-  }, ["供应商", "库存", "起订量", "阶梯价格", "交期", ""].map(h => /*#__PURE__*/React.createElement("th", {
+  }, ["供应商", "库存", "起订量", "阶梯价格", "交期", ""].map(h => pbElement("th", {
     key: h,
     style: {
       padding: "9px 10px",
@@ -4237,56 +4350,56 @@ function PartDetailModal({
       color: C.green,
       borderBottom: `1px solid ${C.greenMid}`
     }
-  }, h)))), /*#__PURE__*/React.createElement("tbody", null, offers.map((o, i) => /*#__PURE__*/React.createElement("tr", {
+  }, h)))), pbElement("tbody", null, offers.map((o, i) => pbElement("tr", {
     key: i,
     style: i % 2 ? {
       background: C.bgSoft
     } : {}
-  }, /*#__PURE__*/React.createElement("td", {
+  }, pbElement("td", {
     style: {
       padding: "9px 10px",
       fontWeight: 600
     }
-  }, o.vendor), /*#__PURE__*/React.createElement("td", {
+  }, o.vendor), pbElement("td", {
     style: {
       padding: "9px 10px",
       fontFamily: "'DM Mono',monospace",
       color: o.stock > 0 ? C.green : "#c0392b"
     }
-  }, o.stock != null ? o.stock.toLocaleString() : "—"), /*#__PURE__*/React.createElement("td", {
+  }, o.stock != null ? o.stock.toLocaleString() : "—"), pbElement("td", {
     style: {
       padding: "9px 10px",
       fontFamily: "'DM Mono',monospace"
     }
-  }, o.moq ?? "—"), /*#__PURE__*/React.createElement("td", {
+  }, o.moq ?? "—"), pbElement("td", {
     style: {
       padding: "9px 10px"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       display: "flex",
       gap: 8,
       flexWrap: "wrap"
     }
-  }, (o.tiers || []).map((t, j) => /*#__PURE__*/React.createElement("span", {
+  }, (o.tiers || []).map((t, j) => pbElement("span", {
     key: j,
     style: {
       fontSize: 11,
       fontFamily: "'DM Mono',monospace"
     }
-  }, t.qty, "+:", /*#__PURE__*/React.createElement("b", {
+  }, t.qty, "+:", pbElement("b", {
     style: {
       color: C.green
     }
-  }, o.currency || "USD", " ", t.price))))), /*#__PURE__*/React.createElement("td", {
+  }, o.currency || "USD", " ", t.price))))), pbElement("td", {
     style: {
       padding: "9px 10px"
     }
-  }, o.leadTime?.days ? `${o.leadTime.days}天${o.leadTime.abnormal ? " ⚠" : ""}` : "—"), /*#__PURE__*/React.createElement("td", {
+  }, o.leadTime?.days ? `${o.leadTime.days}天${o.leadTime.abnormal ? " ⚠" : ""}` : "—"), pbElement("td", {
     style: {
       padding: "9px 10px"
     }
-  }, o.url && /*#__PURE__*/React.createElement("a", {
+  }, o.url && pbElement("a", {
     href: o.url,
     target: "_blank",
     rel: "noreferrer",
@@ -4294,16 +4407,16 @@ function PartDetailModal({
       color: C.indigo,
       fontSize: 11
     }
-  }, "\u67E5\u770B \u2197")))))) : /*#__PURE__*/React.createElement("div", {
+  }, "\u67E5\u770B \u2197")))))) : pbElement("div", {
     style: {
       fontSize: 13,
       color: C.textMute
     }
-  }, m?.source === "ai_estimate" ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("p", {
+  }, m?.source === "ai_estimate" ? pbElement("div", null, pbElement("p", {
     style: {
       marginBottom: 8
     }
-  }, "\u26A0 \u6682\u672A\u63A5\u5165\u5206\u9500\u5546 API\uFF0C\u4EE5\u4E0B\u4E3A AI \u4F30\u7B97\uFF0C\u4EC5\u4F9B\u53C2\u8003\uFF1A"), /*#__PURE__*/React.createElement("div", {
+  }, "\u26A0 \u6682\u672A\u63A5\u5165\u5206\u9500\u5546 API\uFF0C\u4EE5\u4E0B\u4E3A AI \u4F30\u7B97\uFF0C\u4EC5\u4F9B\u53C2\u8003\uFF1A"), pbElement("div", {
     style: {
       padding: "10px 14px",
       borderRadius: 8,
@@ -4311,24 +4424,24 @@ function PartDetailModal({
       border: "1px solid #f0dca0",
       color: "#854f0b"
     }
-  }, m.priceUSD1 != null && /*#__PURE__*/React.createElement("span", {
+  }, m.priceUSD1 != null && pbElement("span", {
     style: {
       marginRight: 14
     }
-  }, "1\u7247\u2248", /*#__PURE__*/React.createElement("b", null, "$", m.priceUSD1)), m.priceUSD100 != null && /*#__PURE__*/React.createElement("span", {
+  }, "1\u7247\u2248", pbElement("b", null, "$", m.priceUSD1)), m.priceUSD100 != null && pbElement("span", {
     style: {
       marginRight: 14
     }
-  }, "100\u7247\u2248", /*#__PURE__*/React.createElement("b", null, "$", m.priceUSD100)), /*#__PURE__*/React.createElement("span", null, "\u4F9B\u8D27: ", /*#__PURE__*/React.createElement("b", null, m.stock)), m.channels?.length > 0 && /*#__PURE__*/React.createElement("span", {
+  }, "100\u7247\u2248", pbElement("b", null, "$", m.priceUSD100)), pbElement("span", null, "\u4F9B\u8D27: ", pbElement("b", null, m.stock)), m.channels?.length > 0 && pbElement("span", {
     style: {
       marginLeft: 14
     }
-  }, "\u6E20\u9053: ", m.channels.join("、")))) : "暂无供应商报价数据")), tab === "downloads" && (downloads.length ? /*#__PURE__*/React.createElement("div", {
+  }, "\u6E20\u9053: ", m.channels.join("、")))) : "暂无供应商报价数据")), tab === "downloads" && (downloads.length ? pbElement("div", {
     style: {
       display: "grid",
       gap: 8
     }
-  }, downloads.map((f, i) => /*#__PURE__*/React.createElement("a", {
+  }, downloads.map((f, i) => pbElement("a", {
     key: i,
     href: f.url,
     target: "_blank",
@@ -4344,32 +4457,32 @@ function PartDetailModal({
       color: C.text,
       background: "#fff"
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       fontSize: 20
     }
-  }, f.type === "datasheet" ? "📄" : f.type === "symbol" ? "🔣" : f.type === "footprint" ? "📐" : "🧊"), /*#__PURE__*/React.createElement("span", {
+  }, f.type === "datasheet" ? "📄" : f.type === "symbol" ? "🔣" : f.type === "footprint" ? "📐" : "🧊"), pbElement("span", {
     style: {
       flex: 1,
       fontSize: 13,
       fontWeight: 600
     }
-  }, f.label), /*#__PURE__*/React.createElement("span", {
+  }, f.label), pbElement("span", {
     style: {
       color: C.indigo,
       fontSize: 12
     }
-  }, "\u4E0B\u8F7D \u2193")))) : /*#__PURE__*/React.createElement("p", {
+  }, "\u4E0B\u8F7D \u2193")))) : pbElement("p", {
     style: {
       fontSize: 13,
       color: C.textMute
     }
-  }, "\u6682\u65E0\u53EF\u4E0B\u8F7D\u8D44\u6E90")), tab === "refs" && (refs.length ? /*#__PURE__*/React.createElement("div", {
+  }, "\u6682\u65E0\u53EF\u4E0B\u8F7D\u8D44\u6E90")), tab === "refs" && (refs.length ? pbElement("div", {
     style: {
       display: "grid",
       gap: 10
     }
-  }, refs.map((r, i) => /*#__PURE__*/React.createElement("a", {
+  }, refs.map((r, i) => pbElement("a", {
     key: i,
     href: r.link || "#",
     target: "_blank",
@@ -4383,7 +4496,7 @@ function PartDetailModal({
       textDecoration: "none",
       color: C.text
     }
-  }, r.image && /*#__PURE__*/React.createElement("img", {
+  }, r.image && pbElement("img", {
     src: r.image,
     alt: "",
     style: {
@@ -4392,29 +4505,29 @@ function PartDetailModal({
       objectFit: "cover",
       borderRadius: 6
     }
-  }), /*#__PURE__*/React.createElement("div", {
+  }), pbElement("div", {
     style: {
       flex: 1
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 600,
       color: C.green
     }
-  }, r.name), r.description && /*#__PURE__*/React.createElement("div", {
+  }, r.name), r.description && pbElement("div", {
     style: {
       fontSize: 12,
       color: C.textMute,
       marginTop: 3
     }
-  }, r.description)), r.link && /*#__PURE__*/React.createElement("span", {
+  }, r.description)), r.link && pbElement("span", {
     style: {
       color: C.indigo,
       fontSize: 12,
       alignSelf: "center"
     }
-  }, "\u67E5\u770B \u2197")))) : /*#__PURE__*/React.createElement("p", {
+  }, "\u67E5\u770B \u2197")))) : pbElement("p", {
     style: {
       fontSize: 13,
       color: C.textMute
@@ -4429,36 +4542,36 @@ function VariantPicker({
   onSkip,
   onBack
 }) {
-  return /*#__PURE__*/React.createElement("div", {
+  return pbElement("div", {
     style: {
       maxWidth: 620,
       margin: "50px auto",
       padding: "0 24px",
       animation: "fadeUp 0.4s ease both"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       textAlign: "center",
       marginBottom: 24
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 20,
       fontWeight: 700,
       color: C.text,
       marginBottom: 6
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       fontFamily: "'DM Mono',monospace",
       color: C.green
     }
-  }, base.partNumber), " \u5B58\u5728\u591A\u4E2A\u5C01\u88C5/\u8BA2\u8D27\u53D8\u4F53"), /*#__PURE__*/React.createElement("div", {
+  }, base.partNumber), " \u5B58\u5728\u591A\u4E2A\u5C01\u88C5/\u8BA2\u8D27\u53D8\u4F53"), pbElement("div", {
     style: {
       fontSize: 13,
       color: C.textMute
     }
-  }, "\u8BF7\u786E\u8BA4\u5177\u4F53\u578B\u53F7\uFF0C\u5C01\u88C5\u4FE1\u606F\u5C06\u7528\u4E8E\u66FF\u4EE3\u5339\u914D")), (base.variants || []).map((v, i) => /*#__PURE__*/React.createElement("div", {
+  }, "\u8BF7\u786E\u8BA4\u5177\u4F53\u578B\u53F7\uFF0C\u5C01\u88C5\u4FE1\u606F\u5C06\u7528\u4E8E\u66FF\u4EE3\u5339\u914D")), (base.variants || []).map((v, i) => pbElement("div", {
     key: i,
     onClick: () => onPick(v),
     style: {
@@ -4481,24 +4594,24 @@ function VariantPicker({
       e.currentTarget.style.borderColor = C.border;
       e.currentTarget.style.background = "#fff";
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       flex: 1
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 16,
       fontWeight: 700,
       fontFamily: "'DM Mono',monospace",
       color: C.green
     }
-  }, v.pn), v.note && /*#__PURE__*/React.createElement("div", {
+  }, v.pn), v.note && pbElement("div", {
     style: {
       fontSize: 12,
       color: C.textMute,
       marginTop: 2
     }
-  }, v.note)), v.package && /*#__PURE__*/React.createElement("span", {
+  }, v.note)), v.package && pbElement("span", {
     style: {
       padding: "4px 12px",
       borderRadius: 6,
@@ -4509,17 +4622,17 @@ function VariantPicker({
       border: `1px solid ${C.indigoBorder}`,
       fontFamily: "'DM Mono',monospace"
     }
-  }, v.package), /*#__PURE__*/React.createElement("span", {
+  }, v.package), pbElement("span", {
     style: {
       color: C.textMute
     }
-  }, "\u2192"))), /*#__PURE__*/React.createElement("div", {
+  }, "\u2192"))), pbElement("div", {
     style: {
       display: "flex",
       gap: 10,
       marginTop: 16
     }
-  }, /*#__PURE__*/React.createElement("button", {
+  }, pbElement("button", {
     onClick: onSkip,
     style: {
       flex: 1,
@@ -4531,7 +4644,7 @@ function VariantPicker({
       fontSize: 13,
       cursor: "pointer"
     }
-  }, "\u8DF3\u8FC7\uFF0C\u76F4\u63A5\u4F7F\u7528 ", base.partNumber, "\uFF08\u4E0D\u9650\u5B9A\u5C01\u88C5\uFF09"), /*#__PURE__*/React.createElement("button", {
+  }, "\u8DF3\u8FC7\uFF0C\u76F4\u63A5\u4F7F\u7528 ", base.partNumber, "\uFF08\u4E0D\u9650\u5B9A\u5C01\u88C5\uFF09"), pbElement("button", {
     onClick: onBack,
     style: {
       padding: "11px 20px",
@@ -4552,15 +4665,15 @@ function HomePage({
   err
 }) {
   const [pn, setPn] = useState("");
-  return /*#__PURE__*/React.createElement("div", {
+  return pbElement("div", {
     style: {
-      maxWidth: 640,
+      maxWidth: 820,
       margin: "60px auto",
       padding: "0 24px",
       textAlign: "center",
       animation: "fadeUp 0.5s ease both"
     }
-  }, /*#__PURE__*/React.createElement("svg", {
+  }, pbElement("svg", {
     width: "56",
     height: "56",
     viewBox: "0 0 56 56",
@@ -4568,7 +4681,7 @@ function HomePage({
     style: {
       marginBottom: 16
     }
-  }, /*#__PURE__*/React.createElement("rect", {
+  }, pbElement("rect", {
     x: "4",
     y: "4",
     width: "48",
@@ -4577,25 +4690,25 @@ function HomePage({
     stroke: C.green,
     strokeWidth: "1.5",
     fill: C.greenLight
-  }), /*#__PURE__*/React.createElement("path", {
+  }), pbElement("path", {
     d: "M20 28h16M28 20v16",
     stroke: C.green,
     strokeWidth: "2",
     strokeLinecap: "round"
-  })), /*#__PURE__*/React.createElement("h2", {
+  })), pbElement("h2", {
     style: {
-      fontSize: 28,
+      fontSize: 26,
       fontWeight: 700,
       color: C.green,
-      marginBottom: 8
+      marginBottom: 16
     }
-  }, "\u5143\u5668\u4EF6\u66FF\u4EE3\u6599\u667A\u80FD\u63A8\u8350"), /*#__PURE__*/React.createElement("div", {
+  }, "\u67E5\u8BE2\u5143\u5668\u4EF6 \xB7 \u4E0B\u8F7D\u8BBE\u8BA1\u8D44\u6E90 \xB7 \u5BFB\u627E\u66FF\u4EE3\u6599"), pbElement("div", {
     style: {
       display: "flex",
       gap: 8,
       marginBottom: 14
     }
-  }, /*#__PURE__*/React.createElement("input", {
+  }, pbElement("input", {
     value: pn,
     onChange: e => setPn(e.target.value),
     onKeyDown: e => {
@@ -4611,7 +4724,7 @@ function HomePage({
       fontSize: 15,
       fontFamily: "'DM Mono',monospace"
     }
-  }), /*#__PURE__*/React.createElement("button", {
+  }), pbElement("button", {
     disabled: busy || !pn.trim(),
     onClick: () => onSubmit(pn.trim()),
     style: {
@@ -4624,7 +4737,7 @@ function HomePage({
       fontWeight: 600,
       cursor: pn.trim() ? "pointer" : "not-allowed"
     }
-  }, busy ? "查询中…" : "查询参数")), err && /*#__PURE__*/React.createElement("div", {
+  }, busy ? "查询中…" : "查询参数")), err && pbElement("div", {
     style: {
       padding: "8px 14px",
       borderRadius: 7,
@@ -4634,12 +4747,12 @@ function HomePage({
       fontSize: 13,
       marginBottom: 12
     }
-  }, "\u26A0 ", err), /*#__PURE__*/React.createElement("div", {
+  }, "\u26A0 ", err), pbElement("div", {
     style: {
       fontSize: 12,
       color: C.textMute
     }
-  }, "\u5FEB\u901F\u8BD5\u8BD5:\xA0", ["STM32F103C8T6", "LM358", "AMS1117-3.3", "TL431"].map(x => /*#__PURE__*/React.createElement("button", {
+  }, "\u5FEB\u901F\u8BD5\u8BD5:\xA0", ["STM32F103C8T6", "LM358", "AMS1117-3.3", "TL431"].map(x => pbElement("button", {
     key: x,
     onClick: () => setPn(x),
     style: {
@@ -4653,7 +4766,7 @@ function HomePage({
       cursor: "pointer",
       marginRight: 4
     }
-  }, x))), /*#__PURE__*/React.createElement("div", {
+  }, x))), pbElement("div", {
     className: "flow-row",
     style: {
       marginTop: 28,
@@ -4661,29 +4774,29 @@ function HomePage({
       alignItems: "center",
       justifyContent: "center",
       gap: 6,
-      flexWrap: "nowrap",
+      flexWrap: "wrap",
       fontSize: 12,
       color: C.textSec,
       overflowX: "auto",
       paddingBottom: 4
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: FLOW_A
-  }, "\u2460 \u672C\u5730\u5E93\u67E5\u53C2\u6570"), /*#__PURE__*/React.createElement("span", {
+  }, "\u2460 \u672C\u5730\u5E93\u67E5\u53C2\u6570"), pbElement("span", {
     style: FLOW_ARROW
-  }, "\u2192"), /*#__PURE__*/React.createElement("span", {
+  }, "\u2192"), pbElement("span", {
     style: FLOW_B
-  }, "\u2461 \u8C03\u4F18\u5148\u7EA7/\u7EA6\u675F"), /*#__PURE__*/React.createElement("span", {
+  }, "\u2461 \u8C03\u4F18\u5148\u7EA7/\u7EA6\u675F"), pbElement("span", {
     style: FLOW_ARROW
-  }, "\u2192"), /*#__PURE__*/React.createElement("span", {
+  }, "\u2192"), pbElement("span", {
     style: FLOW_C
-  }, "\u2462 AI\u63A8\u8350\u5019\u9009"), /*#__PURE__*/React.createElement("span", {
+  }, "\u2462 AI\u63A8\u8350\u5019\u9009"), pbElement("span", {
     style: FLOW_ARROW
-  }, "\u2192"), /*#__PURE__*/React.createElement("span", {
+  }, "\u2192"), pbElement("span", {
     style: FLOW_D
-  }, "\u2463 \u7B97\u6CD5\u8BC4\u5206\u6DD8\u6C70"), /*#__PURE__*/React.createElement("span", {
+  }, "\u2463 \u7B97\u6CD5\u8BC4\u5206\u6DD8\u6C70"), pbElement("span", {
     style: FLOW_ARROW
-  }, "\u2192"), /*#__PURE__*/React.createElement("span", {
+  }, "\u2192"), pbElement("span", {
     style: FLOW_E
   }, "\u2464 Top 5")));
 }
@@ -4712,7 +4825,7 @@ function ParamRow({
     setOpen(false);
   };
   const hasCon = con && con.constraintType;
-  return /*#__PURE__*/React.createElement("div", {
+  return pbElement("div", {
     draggable: true,
     onDragStart: e => onDragStart(e, index),
     onDragOver: e => onDragOver(e, index),
@@ -4725,7 +4838,7 @@ function ParamRow({
       cursor: "grab",
       opacity: dragging === index ? 0.4 : 1
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     onClick: () => setOpen(!open),
     style: {
       display: "flex",
@@ -4734,7 +4847,7 @@ function ParamRow({
       padding: "9px 10px",
       cursor: "pointer"
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       minWidth: 24,
       height: 24,
@@ -4749,23 +4862,23 @@ function ParamRow({
       fontFamily: "'DM Mono',monospace",
       border: `1px solid ${C.greenMid}`
     }
-  }, index + 1), /*#__PURE__*/React.createElement("span", {
+  }, index + 1), pbElement("span", {
     style: {
       color: C.textMute,
       fontSize: 13,
       cursor: "grab"
     }
-  }, "\u28FF"), /*#__PURE__*/React.createElement("div", {
+  }, "\u28FF"), pbElement("div", {
     style: {
       flex: 1,
       minWidth: 0
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 600
     }
-  }, p.name, hasCon && /*#__PURE__*/React.createElement("span", {
+  }, p.name, hasCon && pbElement("span", {
     style: {
       marginLeft: 6,
       fontSize: 10,
@@ -4774,36 +4887,36 @@ function ParamRow({
       background: con.constraintType === "hard" ? "#fdeaea" : C.amberBg,
       color: con.constraintType === "hard" ? "#c0392b" : C.amber
     }
-  }, con.constraintType === "hard" ? "硬约束" : "软偏好")), /*#__PURE__*/React.createElement("div", {
+  }, con.constraintType === "hard" ? "硬约束" : "软偏好")), pbElement("div", {
     style: {
       fontSize: 11,
       color: C.textMute
     }
-  }, p.nameEn)), /*#__PURE__*/React.createElement("span", {
+  }, p.nameEn)), pbElement("span", {
     style: {
       fontSize: 12,
       fontFamily: "'DM Mono',monospace",
       color: C.textSec,
       whiteSpace: "nowrap"
     }
-  }, fmtVal(p.value, p.unit)), /*#__PURE__*/React.createElement("span", {
+  }, fmtVal(p.value, p.unit)), pbElement("span", {
     style: {
       fontSize: 10,
       color: C.textMute
     }
-  }, "\u25BE")), open && /*#__PURE__*/React.createElement("div", {
+  }, "\u25BE")), open && pbElement("div", {
     style: {
       padding: "8px 12px 10px",
       borderTop: `1px dashed ${C.borderLight}`,
       background: C.bgSoft
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       display: "flex",
       gap: 6,
       marginBottom: 8
     }
-  }, [["none", "无约束"], ["hard", "硬约束(不满足即淘汰)"], ["soft", "软偏好(不满足扣分)"]].map(([v, l]) => /*#__PURE__*/React.createElement("button", {
+  }, [["none", "无约束"], ["hard", "硬约束(不满足即淘汰)"], ["soft", "软偏好(不满足扣分)"]].map(([v, l]) => pbElement("button", {
     key: v,
     onClick: () => setType(v),
     style: {
@@ -4816,19 +4929,19 @@ function ParamRow({
       fontSize: 11,
       cursor: "pointer"
     }
-  }, l))), type !== "none" && /*#__PURE__*/React.createElement("div", {
+  }, l))), type !== "none" && pbElement("div", {
     style: {
       display: "flex",
       gap: 8,
       marginBottom: 8,
       alignItems: "center"
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       fontSize: 12,
       color: C.textSec
     }
-  }, "\u8303\u56F4:"), /*#__PURE__*/React.createElement("input", {
+  }, "\u8303\u56F4:"), pbElement("input", {
     value: min,
     onChange: e => setMin(e.target.value),
     placeholder: "\u6700\u5C0F\u503C",
@@ -4840,11 +4953,11 @@ function ParamRow({
       fontSize: 12,
       fontFamily: "'DM Mono',monospace"
     }
-  }), /*#__PURE__*/React.createElement("span", {
+  }), pbElement("span", {
     style: {
       color: C.textMute
     }
-  }, "~"), /*#__PURE__*/React.createElement("input", {
+  }, "~"), pbElement("input", {
     value: max,
     onChange: e => setMax(e.target.value),
     placeholder: "\u6700\u5927\u503C",
@@ -4856,12 +4969,12 @@ function ParamRow({
       fontSize: 12,
       fontFamily: "'DM Mono',monospace"
     }
-  }), /*#__PURE__*/React.createElement("span", {
+  }), pbElement("span", {
     style: {
       fontSize: 11,
       color: C.textMute
     }
-  }, p.unit)), /*#__PURE__*/React.createElement("button", {
+  }, p.unit)), pbElement("button", {
     onClick: save,
     style: {
       padding: "5px 16px",
@@ -4894,7 +5007,7 @@ function MarketStrip({
   const d = rec.costDelta,
     dp = rec.costDeltaPct;
   const cheaper = d != null && d < 0;
-  return /*#__PURE__*/React.createElement("div", {
+  return pbElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -4906,36 +5019,36 @@ function MarketStrip({
       border: `1px solid ${C.borderLight}`,
       fontSize: 12
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       fontWeight: 600,
       color: C.textSec
     }
-  }, "\uD83D\uDCB0"), m.unitPrice != null && /*#__PURE__*/React.createElement("span", {
+  }, "\uD83D\uDCB0"), m.unitPrice != null && pbElement("span", {
     style: {
       fontFamily: "'DM Mono',monospace"
     }
-  }, m.priceQuantity || 1, "\u7247\u9636\u68AF\u4EF7 ", /*#__PURE__*/React.createElement("b", {
+  }, m.priceQuantity || 1, "\u7247\u9636\u68AF\u4EF7 ", pbElement("b", {
     style: {
       color: C.green
     }
-  }, m.currency || "USD", " ", m.unitPrice)), m.unitPrice == null && m.priceUSD1 != null && /*#__PURE__*/React.createElement("span", {
+  }, m.currency || "USD", " ", m.unitPrice)), m.unitPrice == null && m.priceUSD1 != null && pbElement("span", {
     style: {
       fontFamily: "'DM Mono',monospace"
     }
-  }, "1\u7247 ", /*#__PURE__*/React.createElement("b", {
+  }, "1\u7247 ", pbElement("b", {
     style: {
       color: C.green
     }
-  }, "$", m.priceUSD1)), m.unitPrice == null && m.priceUSD100 != null && /*#__PURE__*/React.createElement("span", {
+  }, "$", m.priceUSD1)), m.unitPrice == null && m.priceUSD100 != null && pbElement("span", {
     style: {
       fontFamily: "'DM Mono',monospace"
     }
-  }, "100\u7247 ", /*#__PURE__*/React.createElement("b", {
+  }, "100\u7247 ", pbElement("b", {
     style: {
       color: C.green
     }
-  }, "$", m.priceUSD100)), d != null && /*#__PURE__*/React.createElement("span", {
+  }, "$", m.priceUSD100)), d != null && pbElement("span", {
     style: {
       padding: "2px 8px",
       borderRadius: 4,
@@ -4945,15 +5058,15 @@ function MarketStrip({
       color: cheaper ? C.green : "#c0392b",
       border: `1px solid ${cheaper ? C.greenMid : "#f5c6c6"}`
     }
-  }, cheaper ? "↓省" : "↑贵", " $", Math.abs(d).toFixed(2), dp != null ? ` (${dp > 0 ? "+" : ""}${dp}%)` : ""), /*#__PURE__*/React.createElement("span", null, "\u4F9B\u8D27 ", /*#__PURE__*/React.createElement("b", {
+  }, cheaper ? "↓省" : "↑贵", " $", Math.abs(d).toFixed(2), dp != null ? ` (${dp > 0 ? "+" : ""}${dp}%)` : ""), pbElement("span", null, "\u4F9B\u8D27 ", pbElement("b", {
     style: {
       color: stockColor
     }
-  }, m.stock), m.stockQty ? ` ${m.stockQty.toLocaleString()}` : ""), m.channels?.length > 0 && /*#__PURE__*/React.createElement("span", {
+  }, m.stock), m.stockQty ? ` ${m.stockQty.toLocaleString()}` : ""), m.channels?.length > 0 && pbElement("span", {
     style: {
       color: C.textMute
     }
-  }, m.channels.join("、")), /*#__PURE__*/React.createElement("span", {
+  }, m.channels.join("、")), pbElement("span", {
     style: {
       marginLeft: "auto",
       fontSize: 10,
@@ -4983,20 +5096,20 @@ function EliminatedRow({
     return rank(a) - rank(b) || (a.score || 0) - (b.score || 0);
   });
   const metrics = [["技术兼容", d && d.technical], ["证据覆盖", d && d.evidenceCoverage, "%"], ["来源可信", d && d.sourceConfidence, "%"], ["结论可信", d && d.confidence]].filter(x => x[1] !== null && x[1] !== undefined);
-  return /*#__PURE__*/React.createElement("div", {
+  return pbElement("div", {
     style: {
       padding: "8px 0",
       borderBottom: `1px solid ${C.borderLight}`,
       fontSize: 12
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       display: "flex",
       gap: 12,
       alignItems: "baseline",
       flexWrap: "wrap"
     }
-  }, isTop5 && /*#__PURE__*/React.createElement("span", {
+  }, isTop5 && pbElement("span", {
     style: {
       fontSize: 10,
       padding: "1px 6px",
@@ -5006,25 +5119,25 @@ function EliminatedRow({
       color: C.textMute,
       fontFamily: "'DM Mono',monospace"
     }
-  }, "#", index + 1), /*#__PURE__*/React.createElement("span", {
+  }, "#", index + 1), pbElement("span", {
     style: {
       fontFamily: "'DM Mono',monospace",
       fontWeight: 600,
       color: C.textSec,
       minWidth: 130
     }
-  }, item.partNumber), item.manufacturer && /*#__PURE__*/React.createElement("span", {
+  }, item.partNumber), item.manufacturer && pbElement("span", {
     style: {
       fontSize: 11,
       color: C.textMute
     }
-  }, item.manufacturer), /*#__PURE__*/React.createElement("span", {
+  }, item.manufacturer), pbElement("span", {
     style: {
       color: "#c0392b",
       flex: 1,
       minWidth: 180
     }
-  }, item.reason)), metrics.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, item.reason)), metrics.length > 0 && pbElement("div", {
     style: {
       display: "flex",
       gap: 14,
@@ -5033,23 +5146,23 @@ function EliminatedRow({
       color: C.textMute,
       flexWrap: "wrap"
     }
-  }, metrics.map((m, k) => /*#__PURE__*/React.createElement("span", {
+  }, metrics.map((m, k) => pbElement("span", {
     key: k
-  }, m[0], " ", /*#__PURE__*/React.createElement("b", {
+  }, m[0], " ", pbElement("b", {
     style: {
       color: C.textSec
     }
-  }, m[1], m[2] || "")))), showDetail && /*#__PURE__*/React.createElement("details", {
+  }, m[1], m[2] || "")))), showDetail && pbElement("details", {
     style: {
       marginTop: 6
     }
-  }, /*#__PURE__*/React.createElement("summary", {
+  }, pbElement("summary", {
     style: {
       cursor: "pointer",
       fontSize: 11,
       color: C.indigo
     }
-  }, "\u67E5\u770B\u9010\u53C2\u6570\u5BF9\u6BD4\uFF08", nOk, " \u9879\u6EE1\u8DB3 \xB7 ", nBad, " \u9879\u4E0D\u8DB3 \xB7 ", nNone, " \u9879\u65E0\u6570\u636E\uFF09"), /*#__PURE__*/React.createElement("div", {
+  }, "\u67E5\u770B\u9010\u53C2\u6570\u5BF9\u6BD4\uFF08", nOk, " \u9879\u6EE1\u8DB3 \xB7 ", nBad, " \u9879\u4E0D\u8DB3 \xB7 ", nNone, " \u9879\u65E0\u6570\u636E\uFF09"), pbElement("div", {
     style: {
       marginTop: 6,
       display: "grid",
@@ -5059,7 +5172,7 @@ function EliminatedRow({
     const state = !ps.known ? "none" : ps.score >= 70 ? "ok" : "bad";
     const bg = state === "ok" ? C.greenLight : state === "bad" ? "#fdeaea" : C.bgSoft;
     const col = state === "ok" ? C.green : state === "bad" ? "#c0392b" : C.textMute;
-    return /*#__PURE__*/React.createElement("div", {
+    return pbElement("div", {
       key: j,
       style: {
         display: "flex",
@@ -5070,36 +5183,36 @@ function EliminatedRow({
         background: bg,
         fontSize: 11
       }
-    }, /*#__PURE__*/React.createElement("span", {
+    }, pbElement("span", {
       style: {
         minWidth: 104,
         color: C.textSec
       }
-    }, ps.paramName), /*#__PURE__*/React.createElement("span", {
+    }, ps.paramName), pbElement("span", {
       style: {
         minWidth: 104,
         fontFamily: "'DM Mono',monospace",
         color: C.textMute
       }
-    }, fmtVal(ps.origValue, ps.origUnit)), /*#__PURE__*/React.createElement("span", {
+    }, fmtVal(ps.origValue, ps.origUnit)), pbElement("span", {
       style: {
         color: C.textMute
       }
-    }, "\u2192"), /*#__PURE__*/React.createElement("span", {
+    }, "\u2192"), pbElement("span", {
       style: {
         minWidth: 104,
         fontFamily: "'DM Mono',monospace",
         fontWeight: 600,
         color: col
       }
-    }, ps.known ? fmtVal(ps.value, ps.unit) : "无数据"), /*#__PURE__*/React.createElement("span", {
+    }, ps.known ? fmtVal(ps.value, ps.unit) : "无数据"), pbElement("span", {
       style: {
         minWidth: 32,
         textAlign: "right",
         fontFamily: "'DM Mono',monospace",
         color: col
       }
-    }, ps.known ? ps.score : "—"), /*#__PURE__*/React.createElement("span", {
+    }, ps.known ? ps.score : "—"), pbElement("span", {
       style: {
         flex: 1,
         color: col
@@ -5115,7 +5228,7 @@ function ResultCard({
   onShowDetail
 }) {
   const [expanded, setExpanded] = useState(index === 0);
-  return /*#__PURE__*/React.createElement("div", {
+  return pbElement("div", {
     style: {
       borderRadius: 10,
       border: `1.5px solid ${C.border}`,
@@ -5125,7 +5238,7 @@ function ResultCard({
       animation: "fadeUp 0.4s ease both",
       animationDelay: `${index * 0.06}s`
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       padding: "14px 18px",
       display: "flex",
@@ -5134,7 +5247,7 @@ function ResultCard({
       cursor: "pointer"
     },
     onClick: () => setExpanded(!expanded)
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       width: 30,
       height: 30,
@@ -5149,14 +5262,14 @@ function ResultCard({
       fontFamily: "'DM Mono',monospace",
       border: `1px solid ${C.greenMid}`
     }
-  }, "#", index + 1), /*#__PURE__*/React.createElement(ScoreRing, {
+  }, "#", index + 1), pbElement(ScoreRing, {
     score: rec.confidence ?? rec.overallScore
-  }), /*#__PURE__*/React.createElement("div", {
+  }), pbElement("div", {
     style: {
       flex: 1,
       minWidth: 0
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -5164,9 +5277,9 @@ function ResultCard({
       flexWrap: "wrap",
       marginBottom: 4
     }
-  }, /*#__PURE__*/React.createElement(LevelBadge, {
+  }, pbElement(LevelBadge, {
     level: rec.replacementLevel
-  }), /*#__PURE__*/React.createElement("span", {
+  }), pbElement("span", {
     onClick: e => {
       e.stopPropagation();
       onShowDetail(rec.partNumber, rec);
@@ -5181,7 +5294,7 @@ function ResultCard({
       textUnderlineOffset: 3
     },
     title: "\u70B9\u51FB\u67E5\u770B\u8BE6\u60C5\u548C\u4F9B\u5E94\u5546\u91C7\u8D2D\u4FE1\u606F"
-  }, rec.partNumber, " \uD83D\uDD0D"), rec.isPreferred && /*#__PURE__*/React.createElement("span", {
+  }, rec.partNumber, " \uD83D\uDD0D"), rec.isPreferred && pbElement("span", {
     style: {
       padding: "2px 7px",
       borderRadius: 4,
@@ -5191,7 +5304,7 @@ function ResultCard({
       fontWeight: 600,
       border: "1px solid #f0dca0"
     }
-  }, "\u2B50 \u4F18\u9009"), rec.inPLM && /*#__PURE__*/React.createElement("span", {
+  }, "\u2B50 \u4F18\u9009"), rec.inPLM && pbElement("span", {
     style: {
       padding: "2px 7px",
       borderRadius: 4,
@@ -5201,7 +5314,7 @@ function ResultCard({
       fontWeight: 600,
       border: `1px solid ${C.indigoBorder}`
     }
-  }, "\uD83D\uDCE6 ezPLM"), /*#__PURE__*/React.createElement("span", {
+  }, "\uD83D\uDCE6 ezPLM"), pbElement("span", {
     style: {
       padding: "2px 7px",
       borderRadius: 4,
@@ -5210,24 +5323,24 @@ function ResultCard({
       fontSize: 10,
       border: `1px solid ${C.borderLight}`
     }
-  }, rec.dataSource)), /*#__PURE__*/React.createElement("div", {
+  }, rec.dataSource)), pbElement("div", {
     style: {
       fontSize: 13,
       color: C.textMute
     }
-  }, rec.manufacturer), pending && rec.pendingReason && /*#__PURE__*/React.createElement("div", {
+  }, rec.manufacturer), pending && rec.pendingReason && pbElement("div", {
     style: {
       fontSize: 11,
       color: C.amber,
       marginTop: 3
     }
-  }, "\u26A0 ", rec.pendingReason), rec.description && /*#__PURE__*/React.createElement("div", {
+  }, "\u26A0 ", rec.pendingReason), rec.description && pbElement("div", {
     style: {
       fontSize: 12,
       color: C.textMute,
       marginTop: 2
     }
-  }, rec.description, rec.dataSource === "AI搜索" && /*#__PURE__*/React.createElement("span", {
+  }, rec.description, rec.dataSource === "AI搜索" && pbElement("span", {
     style: {
       marginLeft: 6,
       fontSize: 10,
@@ -5237,23 +5350,23 @@ function ResultCard({
       color: C.amber,
       border: "1px solid #f0dca0"
     }
-  }, "\u63CF\u8FF0\u6765\u81EAAI\uFF0C\u8BF7\u6838\u5BF9"))), /*#__PURE__*/React.createElement("div", {
+  }, "\u63CF\u8FF0\u6765\u81EAAI\uFF0C\u8BF7\u6838\u5BF9"))), pbElement("div", {
     style: {
       fontSize: 16,
       color: C.textMute,
       transform: expanded ? "rotate(180deg)" : "rotate(0)",
       transition: "transform 0.2s"
     }
-  }, "\u25BE")), rec.technical != null && /*#__PURE__*/React.createElement("div", {
+  }, "\u25BE")), rec.technical != null && pbElement("div", {
     style: {
       padding: "0 18px 10px"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       display: "flex",
       gap: 8
     }
-  }, [["技术兼容", rec.technical], ["证据覆盖", rec.evidenceCoverage != null ? rec.evidenceCoverage + "%" : "—"], ["来源可信", rec.sourceConfidence != null ? rec.sourceConfidence + "%" : "—"], ["结论可信", rec.confidence]].map(([l, v], i) => /*#__PURE__*/React.createElement("div", {
+  }, [["技术兼容", rec.technical], ["证据覆盖", rec.evidenceCoverage != null ? rec.evidenceCoverage + "%" : "—"], ["来源可信", rec.sourceConfidence != null ? rec.sourceConfidence + "%" : "—"], ["结论可信", rec.confidence]].map(([l, v], i) => pbElement("div", {
     key: i,
     style: {
       flex: 1,
@@ -5263,20 +5376,20 @@ function ResultCard({
       border: `1px solid ${i === 3 ? C.greenMid : C.borderLight}`,
       textAlign: "center"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 16,
       fontWeight: 700,
       fontFamily: "'DM Mono',monospace",
       color: i === 3 ? C.green : C.text
     }
-  }, v), /*#__PURE__*/React.createElement("div", {
+  }, v), pbElement("div", {
     style: {
       fontSize: 10,
       color: C.textMute,
       marginTop: 1
     }
-  }, l)))), rec.replacementLevel?.level === "P2" && /*#__PURE__*/React.createElement("div", {
+  }, l)))), rec.replacementLevel?.level === "P2" && pbElement("div", {
     style: {
       marginTop: 6,
       fontSize: 11,
@@ -5286,7 +5399,7 @@ function ResultCard({
       borderRadius: 6,
       padding: "5px 8px"
     }
-  }, "\u26A0 \u53C2\u6570\u9AD8\u5EA6\u5339\u914D\uFF0C\u4F46\u5F15\u811A\u6620\u5C04\u5C1A\u672A\u9A8C\u8BC1 \u2014 \u9700\u4EBA\u5DE5\u6838\u5BF9\u5F15\u811A\u540E\u65B9\u53EF\u5224\u5B9A\"\u53EF\u76F4\u63A5\u66FF\u6362\""), rec.replacementLevel?.level === "P0" && /*#__PURE__*/React.createElement("div", {
+  }, "\u26A0 \u53C2\u6570\u9AD8\u5EA6\u5339\u914D\uFF0C\u4F46\u5F15\u811A\u6620\u5C04\u5C1A\u672A\u9A8C\u8BC1 \u2014 \u9700\u4EBA\u5DE5\u6838\u5BF9\u5F15\u811A\u540E\u65B9\u53EF\u5224\u5B9A\"\u53EF\u76F4\u63A5\u66FF\u6362\""), rec.replacementLevel?.level === "P0" && pbElement("div", {
     style: {
       marginTop: 6,
       fontSize: 11,
@@ -5296,42 +5409,42 @@ function ResultCard({
       borderRadius: 6,
       padding: "5px 8px"
     }
-  }, "\u2139 \u8BC1\u636E\u8986\u76D6\u7387\u8FC7\u4F4E\uFF0C\u6570\u636E\u4E0D\u8DB3\u4EE5\u5224\u65AD\u517C\u5BB9\u6027"), /*#__PURE__*/React.createElement("div", {
+  }, "\u2139 \u8BC1\u636E\u8986\u76D6\u7387\u8FC7\u4F4E\uFF0C\u6570\u636E\u4E0D\u8DB3\u4EE5\u5224\u65AD\u517C\u5BB9\u6027"), pbElement("div", {
     style: {
       marginTop: 8
     }
-  }, /*#__PURE__*/React.createElement(MarketStrip, {
+  }, pbElement(MarketStrip, {
     rec: rec,
     market: market
-  }))), expanded && (rec.paramScores || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+  }))), expanded && (rec.paramScores || []).length > 0 && pbElement("div", {
     style: {
       padding: "0 14px 12px"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       padding: "6px 10px",
       fontSize: 12,
       fontWeight: 600,
       color: C.text
     }
-  }, "\uD83D\uDD2C \u53C2\u6570\u5BF9\u6BD4\u8BE6\u60C5"), (rec.extraParams || []).length > 0 && /*#__PURE__*/React.createElement("details", {
+  }, "\uD83D\uDD2C \u53C2\u6570\u5BF9\u6BD4\u8BE6\u60C5"), (rec.extraParams || []).length > 0 && pbElement("details", {
     style: {
       margin: "4px 10px 8px",
       fontSize: 11
     }
-  }, /*#__PURE__*/React.createElement("summary", {
+  }, pbElement("summary", {
     style: {
       cursor: "pointer",
       color: C.textMute
     }
-  }, "\u8BE5\u5019\u9009\u53E6\u6709 ", rec.extraParams.length, " \u9879\u53C2\u6570\u672A\u53C2\u4E0E\u5BF9\u6BD4\uFF08\u539F\u578B\u53F7\u65E0\u5BF9\u5E94\u9879\uFF09"), /*#__PURE__*/React.createElement("div", {
+  }, "\u8BE5\u5019\u9009\u53E6\u6709 ", rec.extraParams.length, " \u9879\u53C2\u6570\u672A\u53C2\u4E0E\u5BF9\u6BD4\uFF08\u539F\u578B\u53F7\u65E0\u5BF9\u5E94\u9879\uFF09"), pbElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))",
       gap: "2px 12px",
       marginTop: 6
     }
-  }, rec.extraParams.map((p, i) => /*#__PURE__*/React.createElement("div", {
+  }, rec.extraParams.map((p, i) => pbElement("div", {
     key: i,
     style: {
       display: "flex",
@@ -5339,17 +5452,17 @@ function ResultCard({
       gap: 8,
       color: C.textSec
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       overflow: "hidden",
       textOverflow: "ellipsis",
       whiteSpace: "nowrap"
     }
-  }, p.name), /*#__PURE__*/React.createElement("span", {
+  }, p.name), pbElement("span", {
     style: {
       fontFamily: "'DM Mono',monospace"
     }
-  }, p.value))))), rec.paramScores.map(ps => /*#__PURE__*/React.createElement("div", {
+  }, p.value))))), rec.paramScores.map(ps => pbElement("div", {
     key: ps.paramId,
     style: {
       display: "grid",
@@ -5362,33 +5475,33 @@ function ResultCard({
       fontSize: 12,
       marginBottom: 3
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       color: C.textSec,
       fontSize: 11
     }
-  }, ps.paramName), /*#__PURE__*/React.createElement("div", {
+  }, ps.paramName), pbElement("div", {
     style: {
       fontFamily: "'DM Mono',monospace",
       fontSize: 12
     }
-  }, ps.value, ps.unit && !String(ps.value).includes(ps.unit) ? ` ${ps.unit}` : ""), /*#__PURE__*/React.createElement("div", {
+  }, ps.value, ps.unit && !String(ps.value).includes(ps.unit) ? ` ${ps.unit}` : ""), pbElement("div", {
     style: {
       fontWeight: 700,
       color: ps.known === false ? C.textMute : scoreColor(ps.score),
       fontFamily: "'DM Mono',monospace",
       textAlign: "center"
     }
-  }, ps.known === false ? "—" : ps.score), /*#__PURE__*/React.createElement("div", {
+  }, ps.known === false ? "—" : ps.score), pbElement("div", {
     style: {
       color: C.textMute,
       fontSize: 11
     }
-  }, ps.comment), /*#__PURE__*/React.createElement("div", {
+  }, ps.comment), pbElement("div", {
     style: {
       textAlign: "right"
     }
-  }, /*#__PURE__*/React.createElement(SourceTag, {
+  }, pbElement(SourceTag, {
     source: ps.source,
     sourceLabel: ps.sourceLabel
   }))))));
@@ -5400,25 +5513,25 @@ function CompareTable({
   recs
 }) {
   const params = original.parameters || [];
-  return /*#__PURE__*/React.createElement("div", {
+  return pbElement("div", {
     style: {
       overflowX: "auto",
       borderRadius: 10,
       border: `1.5px solid ${C.border}`,
       background: "#fff"
     }
-  }, /*#__PURE__*/React.createElement("table", {
+  }, pbElement("table", {
     style: {
       width: "100%",
       borderCollapse: "collapse",
       fontSize: 12,
       minWidth: 640
     }
-  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+  }, pbElement("thead", null, pbElement("tr", {
     style: {
       background: C.greenLight
     }
-  }, /*#__PURE__*/React.createElement("th", {
+  }, pbElement("th", {
     style: {
       padding: "9px 12px",
       textAlign: "left",
@@ -5429,7 +5542,7 @@ function CompareTable({
       left: 0,
       background: C.greenLight
     }
-  }, "\u53C2\u6570"), /*#__PURE__*/React.createElement("th", {
+  }, "\u53C2\u6570"), pbElement("th", {
     style: {
       padding: "9px 12px",
       textAlign: "left",
@@ -5437,12 +5550,12 @@ function CompareTable({
       color: C.textSec,
       borderBottom: `1px solid ${C.greenMid}`
     }
-  }, original.partNumber, /*#__PURE__*/React.createElement("div", {
+  }, original.partNumber, pbElement("div", {
     style: {
       fontSize: 10,
       fontWeight: 400
     }
-  }, "\u539F\u578B\u53F7")), recs.map(r => /*#__PURE__*/React.createElement("th", {
+  }, "\u539F\u578B\u53F7")), recs.map(r => pbElement("th", {
     key: r.partNumber,
     style: {
       padding: "9px 12px",
@@ -5451,18 +5564,18 @@ function CompareTable({
       color: C.green,
       borderBottom: `1px solid ${C.greenMid}`
     }
-  }, r.partNumber, /*#__PURE__*/React.createElement("div", {
+  }, r.partNumber, pbElement("div", {
     style: {
       fontSize: 10,
       fontWeight: 400,
       color: scoreColor(r.confidence)
     }
-  }, "\u53EF\u4FE1", r.confidence))))), /*#__PURE__*/React.createElement("tbody", null, params.map((p, i) => /*#__PURE__*/React.createElement("tr", {
+  }, "\u53EF\u4FE1", r.confidence))))), pbElement("tbody", null, params.map((p, i) => pbElement("tr", {
     key: p.id,
     style: i % 2 ? {
       background: C.bgSoft
     } : {}
-  }, /*#__PURE__*/React.createElement("td", {
+  }, pbElement("td", {
     style: {
       padding: "7px 12px",
       fontWeight: 600,
@@ -5472,7 +5585,7 @@ function CompareTable({
       left: 0,
       background: i % 2 ? C.bgSoft : "#fff"
     }
-  }, p.name), /*#__PURE__*/React.createElement("td", {
+  }, p.name), pbElement("td", {
     style: {
       padding: "7px 12px",
       fontFamily: "'DM Mono',monospace",
@@ -5480,7 +5593,7 @@ function CompareTable({
     }
   }, fmtVal(p.value, p.unit)), recs.map(r => {
     const ps = (r.paramScores || []).find(x => x.paramId === p.id);
-    return /*#__PURE__*/React.createElement("td", {
+    return pbElement("td", {
       key: r.partNumber,
       style: {
         padding: "7px 12px",
@@ -5488,7 +5601,7 @@ function CompareTable({
         fontSize: 11,
         background: ps ? ps.known === false ? "#f5f5f5" : scoreBg(ps.score) : undefined
       }
-    }, ps ? `${ps.value}${ps.unit && !String(ps.value).includes(ps.unit) ? " " + ps.unit : ""}` : "—", ps && ps.known !== false && /*#__PURE__*/React.createElement("span", {
+    }, ps ? `${ps.value}${ps.unit && !String(ps.value).includes(ps.unit) ? " " + ps.unit : ""}` : "—", ps && ps.known !== false && pbElement("span", {
       style: {
         marginLeft: 6,
         fontWeight: 700,
@@ -5769,14 +5882,14 @@ function Workbench({
       noFormalReason: recs.length ? "" : result?.notice || "没有候选同时满足『有权威来源确认』与『所有硬约束可验证』两项要求"
     };
   };
-  const DISCLAIMER = "本报告由 AltPart Pro 自动生成，用于替代料候选探索与证据辅助。" + "标记为『待核验』的候选缺少权威来源确认或存在未知硬约束，不构成替代结论。" + "任何替代决策须经工程师核对原厂 datasheet 后确认。";
+  const DISCLAIMER = "本报告由 PartBridge 自动生成，用于替代料候选探索与证据辅助。" + "标记为『待核验』的候选缺少权威来源确认或存在未知硬约束，不构成替代结论。" + "任何替代决策须经工程师核对原厂 datasheet 后确认。";
   const exportMD = () => {
     if (!result) return;
     const m = buildExportModel();
     const L = [];
     L.push(`# ${m.meta.originalPart} 替代料推荐报告`, "");
     L.push(`- 生成时间：${m.meta.generatedAt}`);
-    L.push(`- 工具版本：AltPart Pro v${m.meta.appVersion}`);
+    L.push(`- 工具版本：PartBridge v${m.meta.appVersion}`);
     if (m.meta.requestId) L.push(`- 请求编号：${m.meta.requestId}`);
     L.push(`- 原型号：${m.meta.originalPart}${m.meta.originalManufacturer ? `（${m.meta.originalManufacturer}）` : ""}`);
     if (m.meta.requestedMpn !== m.meta.originalPart) L.push(`- ⚠ 用户输入 ${m.meta.requestedMpn}，实际匹配 ${m.meta.originalPart}（匹配类型：${m.meta.matchType}）`);
@@ -5810,14 +5923,14 @@ function Workbench({
       m.eliminated.forEach(e => L.push(`| ${e.partNumber} | ${e.manufacturer || ""} | ${(e.reason || "").replace(/\|/g, "／")} |`));
     } else L.push("> 无");
     L.push("", "---", "", `> ${DISCLAIMER}`);
-    downloadText(`${m.meta.originalPart}_替代推荐.md`, "\uFEFF" + L.join("\n"), "text/markdown;charset=utf-8");
+    downloadReport(`${m.meta.originalPart}_alternatives.md`, "\uFEFF" + L.join("\n"), "text/markdown;charset=utf-8");
   };
   const exportCSV = () => {
     if (!result) return;
     const m = buildExportModel();
     const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const rows = [];
-    rows.push(["# AltPart Pro 替代料推荐报告"].map(q).join(","));
+    rows.push(["# PartBridge 替代料推荐报告"].map(q).join(","));
     rows.push(["# 生成时间", m.meta.generatedAt].map(q).join(","));
     rows.push(["# 工具版本", `v${m.meta.appVersion}`].map(q).join(","));
     rows.push(["# 请求编号", m.meta.requestId].map(q).join(","));
@@ -5832,9 +5945,9 @@ function Workbench({
     m.eliminated.forEach(e => rows.push(["已排除", e.partNumber, e.manufacturer || "", "REJECTED", "", "", "", "", "", "", e.reason || ""].map(q).join(",")));
     rows.push("");
     rows.push([`# ${DISCLAIMER}`].map(q).join(","));
-    downloadText(`${m.meta.originalPart}_替代推荐.csv`, "\uFEFF" + rows.join("\n"), "text/csv;charset=utf-8");
+    downloadReport(`${m.meta.originalPart}_alternatives.csv`, "\uFEFF" + rows.join("\n"), "text/csv;charset=utf-8");
   };
-  return /*#__PURE__*/React.createElement("div", {
+  return pbElement("div", {
     className: "workbench",
     style: {
       maxWidth: 1400,
@@ -5845,7 +5958,7 @@ function Workbench({
       gap: 18,
       alignItems: "start"
     }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", null, pbElement("div", {
     style: {
       borderRadius: 12,
       border: `1.5px solid ${C.border}`,
@@ -5853,7 +5966,7 @@ function Workbench({
       padding: "16px 18px",
       marginBottom: 14
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       padding: "3px 10px",
       borderRadius: 5,
@@ -5863,7 +5976,7 @@ function Workbench({
       fontWeight: 600,
       border: `1px solid ${C.greenMid}`
     }
-  }, original.category || "元器件"), /*#__PURE__*/React.createElement("div", {
+  }, original.category || "元器件"), pbElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -5871,14 +5984,14 @@ function Workbench({
       marginTop: 10,
       flexWrap: "wrap"
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       fontSize: 21,
       fontWeight: 700,
       fontFamily: "'DM Mono',monospace",
       color: C.text
     }
-  }, original.partNumber), (original._dataPath === "local_db" || original._dataPath === "local_db+ai") && /*#__PURE__*/React.createElement("span", {
+  }, original.partNumber), (original._dataPath === "local_db" || original._dataPath === "local_db+ai") && pbElement("span", {
     style: {
       padding: "2px 7px",
       borderRadius: 4,
@@ -5888,7 +6001,7 @@ function Workbench({
       fontWeight: 600,
       border: `1px solid ${C.greenMid}`
     }
-  }, "\uD83D\uDCE6 ezPLM"), original._dataPath === "local_db+ai" && /*#__PURE__*/React.createElement("span", {
+  }, "\uD83D\uDCE6 ezPLM"), original._dataPath === "local_db+ai" && pbElement("span", {
     style: {
       padding: "2px 7px",
       borderRadius: 4,
@@ -5898,7 +6011,7 @@ function Workbench({
       fontWeight: 600,
       border: "1px solid #f0dca0"
     }
-  }, "+AI\u8865\u5145\u53C2\u6570"), original._dataPath === "ai_search" && /*#__PURE__*/React.createElement("span", {
+  }, "+AI\u8865\u5145\u53C2\u6570"), original._dataPath === "ai_search" && pbElement("span", {
     style: {
       padding: "2px 7px",
       borderRadius: 4,
@@ -5908,7 +6021,7 @@ function Workbench({
       fontWeight: 600,
       border: "1px solid #f0dca0"
     }
-  }, "\uD83C\uDF10 AI\u641C\u7D22")), original.needsVariantConfirm && original.requestedMpn && original.requestedMpn !== original.partNumber && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83C\uDF10 AI\u641C\u7D22")), original.needsVariantConfirm && original.requestedMpn && original.requestedMpn !== original.partNumber && pbElement("div", {
     style: {
       marginTop: 8,
       padding: "7px 10px",
@@ -5918,73 +6031,73 @@ function Workbench({
       fontSize: 11,
       color: "#854f0b"
     }
-  }, "\u26A0 \u4F60\u67E5\u8BE2\u7684\u662F ", /*#__PURE__*/React.createElement("b", {
+  }, "\u26A0 \u4F60\u67E5\u8BE2\u7684\u662F ", pbElement("b", {
     style: {
       fontFamily: "'DM Mono',monospace"
     }
-  }, original.requestedMpn), "\uFF0C ezPLM \u65E0\u8BE5\u7CBE\u786E\u8BA2\u8D27\u53F7\uFF1B\u5F53\u524D\u663E\u793A\u7684\u662F\u540C\u7CFB\u5217\u53D8\u4F53 ", /*#__PURE__*/React.createElement("b", {
+  }, original.requestedMpn), "\uFF0C ezPLM \u65E0\u8BE5\u7CBE\u786E\u8BA2\u8D27\u53F7\uFF1B\u5F53\u524D\u663E\u793A\u7684\u662F\u540C\u7CFB\u5217\u53D8\u4F53 ", pbElement("b", {
     style: {
       fontFamily: "'DM Mono',monospace"
     }
-  }, original.partNumber), " \u7684\u6570\u636E\u3002 \u8BF7\u5728\u4E0B\u65B9\u786E\u8BA4\u5177\u4F53\u5C01\u88C5/\u8BA2\u8D27\u578B\u53F7\u540E\u518D\u505A\u51B3\u7B56\u3002"), original.manufacturer && /*#__PURE__*/React.createElement("div", {
+  }, original.partNumber), " \u7684\u6570\u636E\u3002 \u8BF7\u5728\u4E0B\u65B9\u786E\u8BA4\u5177\u4F53\u5C01\u88C5/\u8BA2\u8D27\u578B\u53F7\u540E\u518D\u505A\u51B3\u7B56\u3002"), original.manufacturer && pbElement("div", {
     style: {
       fontSize: 13,
       color: C.textMute,
       marginTop: 5
     }
-  }, original.manufacturer), original.description && /*#__PURE__*/React.createElement("div", {
+  }, original.manufacturer), original.description && pbElement("div", {
     style: {
       fontSize: 13,
       color: C.textSec,
       marginTop: 3
     }
-  }, original.description), (original.datasheetUrl || original.footprintFileUrl || original.model3dUrl || original.symbolUrl || original.productUrl) && /*#__PURE__*/React.createElement("div", {
+  }, original.description), (original.datasheetUrl || original.footprintFileUrl || original.model3dUrl || original.symbolUrl || original.productUrl) && pbElement("div", {
     style: {
       marginTop: 12,
       paddingTop: 12,
       borderTop: `1px dashed ${C.borderLight}`
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 12,
       fontWeight: 600,
       color: C.textSec,
       marginBottom: 8
     }
-  }, "\uD83D\uDCE6 \u5E93\u6587\u4EF6\u4E0E\u8D44\u6E90"), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCE6 \u5E93\u6587\u4EF6\u4E0E\u8D44\u6E90"), pbElement("div", {
     style: {
       display: "flex",
       gap: 6,
       flexWrap: "wrap"
     }
-  }, original.datasheetUrl && /*#__PURE__*/React.createElement("a", {
+  }, original.datasheetUrl && pbElement("a", {
     href: resHref(original.datasheetUrl),
     target: "_blank",
     rel: "noreferrer",
     style: RES_BTN
-  }, "\uD83D\uDCC4 Datasheet"), original.footprintFileUrl && /*#__PURE__*/React.createElement("a", {
+  }, "\uD83D\uDCC4 Datasheet"), original.footprintFileUrl && pbElement("a", {
     href: resHref(original.footprintFileUrl),
     target: "_blank",
     rel: "noreferrer",
     style: RES_BTN,
     title: original.footprintFileName
-  }, "\uD83D\uDCD0 KiCad\u5C01\u88C5"), original.model3dUrl && /*#__PURE__*/React.createElement("a", {
+  }, "\uD83D\uDCD0 KiCad\u5C01\u88C5"), original.model3dUrl && pbElement("a", {
     href: resHref(original.model3dUrl),
     target: "_blank",
     rel: "noreferrer",
     style: RES_BTN,
     title: original.model3dFileName
-  }, "\uD83E\uDDCA 3D\u6A21\u578B(STEP)"), original.symbolUrl && /*#__PURE__*/React.createElement("a", {
+  }, "\uD83E\uDDCA 3D\u6A21\u578B(STEP)"), original.symbolUrl && pbElement("a", {
     href: resHref(original.symbolUrl),
     target: "_blank",
     rel: "noreferrer",
     style: RES_BTN
-  }, "\uD83D\uDD23 \u539F\u7406\u56FE\u7B26\u53F7"), original.productUrl && /*#__PURE__*/React.createElement("a", {
+  }, "\uD83D\uDD23 \u539F\u7406\u56FE\u7B26\u53F7"), original.productUrl && pbElement("a", {
     href: original.productUrl,
     target: "_blank",
     rel: "noreferrer",
     style: RES_BTN
-  }, "\uD83D\uDD17 \u5B98\u7F51\u4EA7\u54C1\u9875")), /*#__PURE__*/React.createElement("button", {
+  }, "\uD83D\uDD17 \u5B98\u7F51\u4EA7\u54C1\u9875")), pbElement("button", {
     onClick: () => onShowSelf && onShowSelf(),
     style: {
       marginTop: 8,
@@ -5998,7 +6111,7 @@ function Workbench({
       fontWeight: 600,
       cursor: "pointer"
     }
-  }, "\uD83D\uDD0D \u67E5\u770B eCAD \u5E93\uFF08\u7B26\u53F7 / \u5C01\u88C5 / 3D\uFF09\u4E0E\u5B8C\u6574\u8BE6\u60C5")), (original.variants || []).length > 0 && /*#__PURE__*/React.createElement("button", {
+  }, "\uD83D\uDD0D \u67E5\u770B eCAD \u5E93\uFF08\u7B26\u53F7 / \u5C01\u88C5 / 3D\uFF09\u4E0E\u5B8C\u6574\u8BE6\u60C5")), (original.variants || []).length > 0 && pbElement("button", {
     onClick: () => setShowVariants(v => !v),
     style: {
       marginTop: 10,
@@ -6012,13 +6125,13 @@ function Workbench({
       fontWeight: 600,
       cursor: "pointer"
     }
-  }, "\uD83D\uDD04 \u8BE5\u578B\u53F7\u6709 ", original.variants.length, " \u4E2A\u5C01\u88C5/\u8BA2\u8D27\u53D8\u4F53 \xB7 ", showVariants ? "收起" : "点击切换"), showVariants && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDD04 \u8BE5\u578B\u53F7\u6709 ", original.variants.length, " \u4E2A\u5C01\u88C5/\u8BA2\u8D27\u53D8\u4F53 \xB7 ", showVariants ? "收起" : "点击切换"), showVariants && pbElement("div", {
     style: {
       marginTop: 8,
       maxHeight: 220,
       overflowY: "auto"
     }
-  }, original.variants.map((v, i) => /*#__PURE__*/React.createElement("button", {
+  }, original.variants.map((v, i) => pbElement("button", {
     key: i,
     type: "button",
     onClick: () => onSwitchVariant && onSwitchVariant(v),
@@ -6045,19 +6158,19 @@ function Workbench({
       e.currentTarget.style.background = "#fff";
       e.currentTarget.style.borderColor = C.borderLight;
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       flex: 1,
       minWidth: 0
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 600,
       fontFamily: "'DM Mono',monospace",
       color: C.green
     }
-  }, v.pn, v.duplicateConflict && /*#__PURE__*/React.createElement("span", {
+  }, v.pn, v.duplicateConflict && pbElement("span", {
     title: `ezPLM 中有 ${v.duplicateCount} 条同型号记录且内容冲突，已合并显示信息最完整的一条`,
     style: {
       marginLeft: 6,
@@ -6069,12 +6182,12 @@ function Workbench({
       border: "1px solid #f0dca0",
       fontWeight: 600
     }
-  }, "\u26A0 \u91CD\u590D\u8BB0\u5F55")), v.manufacturer && /*#__PURE__*/React.createElement("div", {
+  }, "\u26A0 \u91CD\u590D\u8BB0\u5F55")), v.manufacturer && pbElement("div", {
     style: {
       fontSize: 10,
       color: C.textSec
     }
-  }, v.manufacturer), v.note && /*#__PURE__*/React.createElement("div", {
+  }, v.manufacturer), v.note && pbElement("div", {
     style: {
       fontSize: 10,
       color: C.textMute,
@@ -6082,7 +6195,7 @@ function Workbench({
       textOverflow: "ellipsis",
       whiteSpace: "nowrap"
     }
-  }, v.note)), v.package && /*#__PURE__*/React.createElement("span", {
+  }, v.note)), v.package && pbElement("span", {
     style: {
       fontSize: 10,
       padding: "2px 6px",
@@ -6092,7 +6205,7 @@ function Workbench({
       fontFamily: "'DM Mono',monospace",
       whiteSpace: "nowrap"
     }
-  }, v.package))))), /*#__PURE__*/React.createElement("div", {
+  }, v.package))))), pbElement("div", {
     style: {
       borderRadius: 12,
       border: `1.5px solid ${C.indigoBorder}`,
@@ -6100,25 +6213,25 @@ function Workbench({
       padding: "14px 16px",
       marginBottom: 14
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 14,
       fontWeight: 700,
       marginBottom: 4
     }
-  }, "\uD83C\uDFED \u4F18\u9009\u5382\u5546"), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83C\uDFED \u4F18\u9009\u5382\u5546"), pbElement("div", {
     style: {
       fontSize: 12,
       color: C.textMute,
       marginBottom: 10
     }
-  }, "\u6DFB\u52A0\u4F18\u9009\u5382\u5546\u540E\uFF0C\u540C\u5206\u5019\u9009\u5C06\u4F18\u5148\u63A8\u8350"), /*#__PURE__*/React.createElement("div", {
+  }, "\u6DFB\u52A0\u4F18\u9009\u5382\u5546\u540E\uFF0C\u540C\u5206\u5019\u9009\u5C06\u4F18\u5148\u63A8\u8350"), pbElement("div", {
     style: {
       display: "flex",
       gap: 6,
       position: "relative"
     }
-  }, /*#__PURE__*/React.createElement("input", {
+  }, pbElement("input", {
     value: mfrInput,
     onChange: e => setMfrInput(e.target.value),
     onKeyDown: e => {
@@ -6132,7 +6245,7 @@ function Workbench({
       border: `1px solid ${C.border}`,
       fontSize: 13
     }
-  }), /*#__PURE__*/React.createElement("button", {
+  }), pbElement("button", {
     onClick: addMfr,
     disabled: !mfrInput.trim(),
     "aria-disabled": !mfrInput.trim(),
@@ -6147,7 +6260,7 @@ function Workbench({
       cursor: "pointer",
       opacity: mfrInput.trim() ? 1 : 0.5
     }
-  }, "\u6DFB\u52A0"), mfrSuggest.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, "\u6DFB\u52A0"), mfrSuggest.length > 0 && pbElement("div", {
     style: {
       position: "absolute",
       top: "100%",
@@ -6160,7 +6273,7 @@ function Workbench({
       boxShadow: "0 8px 24px rgba(0,0,0,0.1)",
       zIndex: 20
     }
-  }, mfrSuggest.map(m => /*#__PURE__*/React.createElement("div", {
+  }, mfrSuggest.map(m => pbElement("div", {
     key: m,
     onClick: () => {
       setMfrs([...mfrs, m]);
@@ -6172,14 +6285,14 @@ function Workbench({
       cursor: "pointer",
       borderBottom: `1px solid ${C.borderLight}`
     }
-  }, m)))), mfrs.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, m)))), mfrs.length > 0 && pbElement("div", {
     style: {
       display: "flex",
       gap: 6,
       flexWrap: "wrap",
       marginTop: 10
     }
-  }, mfrs.map(m => /*#__PURE__*/React.createElement("span", {
+  }, mfrs.map(m => pbElement("span", {
     key: m,
     style: {
       display: "inline-flex",
@@ -6192,7 +6305,7 @@ function Workbench({
       fontSize: 12,
       border: `1px solid ${C.indigoBorder}`
     }
-  }, "\u2B50 ", m, /*#__PURE__*/React.createElement("button", {
+  }, "\u2B50 ", m, pbElement("button", {
     "aria-label": `移除优选厂商 ${m}`,
     onClick: () => setMfrs(mfrs.filter(x => x !== m)),
     style: {
@@ -6205,7 +6318,7 @@ function Workbench({
       lineHeight: 1,
       padding: 0
     }
-  }, "\xD7"))))), /*#__PURE__*/React.createElement("div", {
+  }, "\xD7"))))), pbElement("div", {
     style: {
       borderRadius: 12,
       border: `1.5px solid ${C.border}`,
@@ -6213,24 +6326,24 @@ function Workbench({
       padding: "14px 16px",
       marginBottom: 14
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
       alignItems: "center",
       marginBottom: 10
     }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, pbElement("span", {
     style: {
       fontSize: 14,
       fontWeight: 700
     }
-  }, "\uD83D\uDCCA \u53C2\u6570\u4F18\u5148\u7EA7\u4E0E\u8303\u56F4"), /*#__PURE__*/React.createElement("span", {
+  }, "\uD83D\uDCCA \u53C2\u6570\u4F18\u5148\u7EA7\u4E0E\u8303\u56F4"), pbElement("span", {
     style: {
       fontSize: 11,
       color: C.textMute
     }
-  }, "\u62D6\u62FD\u6392\u5E8F \xB7 \u70B9\u51FB\u8BBE\u7EA6\u675F")), params.map((p, i) => /*#__PURE__*/React.createElement(ParamRow, {
+  }, "\u62D6\u62FD\u6392\u5E8F \xB7 \u70B9\u51FB\u8BBE\u7EA6\u675F")), params.map((p, i) => pbElement(ParamRow, {
     key: p.id,
     p: p,
     index: i,
@@ -6240,7 +6353,7 @@ function Workbench({
     onDragOver: onDragOver,
     onDrop: onDrop,
     dragging: dragging
-  })), reorderNote && /*#__PURE__*/React.createElement("div", {
+  })), reorderNote && pbElement("div", {
     style: {
       marginTop: 8,
       fontSize: 11,
@@ -6250,7 +6363,7 @@ function Workbench({
       borderRadius: 6,
       padding: "6px 8px"
     }
-  }, "\uD83D\uDCA1 ", reorderNote)), mode === "lowCost" && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDCA1 ", reorderNote)), mode === "lowCost" && pbElement("div", {
     style: {
       borderRadius: 12,
       border: `1.5px solid ${C.amber}55`,
@@ -6258,31 +6371,31 @@ function Workbench({
       padding: "14px 16px",
       marginBottom: 14
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 14,
       fontWeight: 700,
       marginBottom: 4,
       color: "#854f0b"
     }
-  }, "\uD83D\uDED2 \u91C7\u8D2D\u6761\u4EF6"), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDED2 \u91C7\u8D2D\u6761\u4EF6"), pbElement("div", {
     style: {
       fontSize: 11,
       color: "#854f0b",
       marginBottom: 10
     }
-  }, "\u4F4E\u6210\u672C\u6392\u5E8F\u53EA\u4F7F\u7528\u771F\u5B9E\u5206\u9500\u5546\u62A5\u4EF7\uFF1B\u65E0\u771F\u5B9E\u62A5\u4EF7\u7684\u5019\u9009\u4F1A\u88AB\u79FB\u5165\u5F85\u6838\u9A8C\uFF0C\u4E0D\u53C2\u4E0E\u6210\u672C\u6392\u540D"), /*#__PURE__*/React.createElement("div", {
+  }, "\u4F4E\u6210\u672C\u6392\u5E8F\u53EA\u4F7F\u7528\u771F\u5B9E\u5206\u9500\u5546\u62A5\u4EF7\uFF1B\u65E0\u771F\u5B9E\u62A5\u4EF7\u7684\u5019\u9009\u4F1A\u88AB\u79FB\u5165\u5F85\u6838\u9A8C\uFF0C\u4E0D\u53C2\u4E0E\u6210\u672C\u6392\u540D"), pbElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr",
       gap: 8
     }
-  }, /*#__PURE__*/React.createElement("label", {
+  }, pbElement("label", {
     style: {
       fontSize: 11,
       color: C.textSec
     }
-  }, "\u91C7\u8D2D\u5730\u533A", /*#__PURE__*/React.createElement("select", {
+  }, "\u91C7\u8D2D\u5730\u533A", pbElement("select", {
     value: procurement.region,
     onChange: e => setProcurement({
       ...procurement,
@@ -6296,20 +6409,20 @@ function Workbench({
       fontSize: 12,
       marginTop: 3
     }
-  }, /*#__PURE__*/React.createElement("option", {
+  }, pbElement("option", {
     value: "CN"
-  }, "\u4E2D\u56FD\u5927\u9646"), /*#__PURE__*/React.createElement("option", {
+  }, "\u4E2D\u56FD\u5927\u9646"), pbElement("option", {
     value: "HK"
-  }, "\u4E2D\u56FD\u9999\u6E2F"), /*#__PURE__*/React.createElement("option", {
+  }, "\u4E2D\u56FD\u9999\u6E2F"), pbElement("option", {
     value: "US"
-  }, "\u7F8E\u56FD"), /*#__PURE__*/React.createElement("option", {
+  }, "\u7F8E\u56FD"), pbElement("option", {
     value: "EU"
-  }, "\u6B27\u6D32"))), /*#__PURE__*/React.createElement("label", {
+  }, "\u6B27\u6D32"))), pbElement("label", {
     style: {
       fontSize: 11,
       color: C.textSec
     }
-  }, "\u91C7\u8D2D\u6570\u91CF", /*#__PURE__*/React.createElement("input", {
+  }, "\u91C7\u8D2D\u6570\u91CF", pbElement("input", {
     type: "number",
     min: "1",
     value: procurement.quantity,
@@ -6325,12 +6438,12 @@ function Workbench({
       fontSize: 12,
       marginTop: 3
     }
-  })), /*#__PURE__*/React.createElement("label", {
+  })), pbElement("label", {
     style: {
       fontSize: 11,
       color: C.textSec
     }
-  }, "\u5305\u88C5\u65B9\u5F0F", /*#__PURE__*/React.createElement("select", {
+  }, "\u5305\u88C5\u65B9\u5F0F", pbElement("select", {
     value: procurement.packaging,
     onChange: e => setProcurement({
       ...procurement,
@@ -6344,22 +6457,22 @@ function Workbench({
       fontSize: 12,
       marginTop: 3
     }
-  }, /*#__PURE__*/React.createElement("option", {
+  }, pbElement("option", {
     value: "any"
-  }, "\u4E0D\u9650"), /*#__PURE__*/React.createElement("option", {
+  }, "\u4E0D\u9650"), pbElement("option", {
     value: "tape"
-  }, "\u5377\u5E26 Tape&Reel"), /*#__PURE__*/React.createElement("option", {
+  }, "\u5377\u5E26 Tape&Reel"), pbElement("option", {
     value: "tube"
-  }, "\u7BA1\u88C5 Tube"), /*#__PURE__*/React.createElement("option", {
+  }, "\u7BA1\u88C5 Tube"), pbElement("option", {
     value: "tray"
-  }, "\u6258\u76D8 Tray"), /*#__PURE__*/React.createElement("option", {
+  }, "\u6258\u76D8 Tray"), pbElement("option", {
     value: "cut"
-  }, "\u6563\u88C5 Cut Tape"))), /*#__PURE__*/React.createElement("label", {
+  }, "\u6563\u88C5 Cut Tape"))), pbElement("label", {
     style: {
       fontSize: 11,
       color: C.textSec
     }
-  }, "\u5E01\u79CD", /*#__PURE__*/React.createElement("select", {
+  }, "\u5E01\u79CD", pbElement("select", {
     value: procurement.currency,
     onChange: e => setProcurement({
       ...procurement,
@@ -6373,13 +6486,13 @@ function Workbench({
       fontSize: 12,
       marginTop: 3
     }
-  }, /*#__PURE__*/React.createElement("option", {
+  }, pbElement("option", {
     value: "USD"
-  }, "USD"), /*#__PURE__*/React.createElement("option", {
+  }, "USD"), pbElement("option", {
     value: "CNY"
-  }, "CNY"), /*#__PURE__*/React.createElement("option", {
+  }, "CNY"), pbElement("option", {
     value: "EUR"
-  }, "EUR")))), /*#__PURE__*/React.createElement("label", {
+  }, "EUR")))), pbElement("label", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -6389,14 +6502,14 @@ function Workbench({
       marginTop: 8,
       cursor: "pointer"
     }
-  }, /*#__PURE__*/React.createElement("input", {
+  }, pbElement("input", {
     type: "checkbox",
     checked: procurement.inStockOnly,
     onChange: e => setProcurement({
       ...procurement,
       inStockOnly: e.target.checked
     })
-  }), "\u4EC5\u663E\u793A\u6709\u73B0\u8D27\u7684\u5019\u9009\uFF08\u65E0\u5E93\u5B58\u6570\u636E\u7684\u79FB\u5165\u5F85\u6838\u9A8C\uFF09")), /*#__PURE__*/React.createElement("div", {
+  }), "\u4EC5\u663E\u793A\u6709\u73B0\u8D27\u7684\u5019\u9009\uFF08\u65E0\u5E93\u5B58\u6570\u636E\u7684\u79FB\u5165\u5F85\u6838\u9A8C\uFF09")), pbElement("div", {
     style: {
       borderRadius: 12,
       border: `1.5px solid ${C.border}`,
@@ -6404,13 +6517,13 @@ function Workbench({
       padding: "14px 16px",
       marginBottom: 14
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 14,
       fontWeight: 700,
       marginBottom: 10
     }
-  }, "\uD83D\uDD00 \u66FF\u4EE3\u6A21\u5F0F"), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDD00 \u66FF\u4EE3\u6A21\u5F0F"), pbElement("div", {
     role: "radiogroup",
     "aria-label": "\u66FF\u4EE3\u6A21\u5F0F",
     style: {
@@ -6420,7 +6533,7 @@ function Workbench({
     }
   }, SUB_MODES.map(m => {
     const disabled = m.id === "pin2pin" && original._pkgConfirmed === false;
-    return /*#__PURE__*/React.createElement("button", {
+    return pbElement("button", {
       key: m.id,
       type: "button",
       role: "radio",
@@ -6439,25 +6552,25 @@ function Workbench({
         textAlign: "left",
         opacity: disabled ? 0.55 : 1
       }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, pbElement("div", {
       style: {
         fontSize: 13,
         fontWeight: 600,
         color: disabled ? C.textMute : C.text
       }
-    }, m.label, disabled && " 🔒"), /*#__PURE__*/React.createElement("div", {
+    }, m.label, disabled && " 🔒"), pbElement("div", {
       style: {
         fontSize: 10,
         color: C.textMute
       }
     }, disabled ? "封装未限定，不可用" : m.desc));
-  })), original._pkgConfirmed === false && /*#__PURE__*/React.createElement("div", {
+  })), original._pkgConfirmed === false && pbElement("div", {
     style: {
       marginTop: 8,
       fontSize: 11,
       color: C.textMute
     }
-  }, "\uD83D\uDCA1 \u672A\u9650\u5B9A\u5C01\u88C5\u65F6\u65E0\u6CD5\u505A Pin-to-Pin \u5224\u5B9A\u3002\u5982\u9700\u8BE5\u6A21\u5F0F\uFF0C\u8BF7\u91CD\u65B0\u641C\u7D22\u5E76\u9009\u62E9\u5177\u4F53\u5C01\u88C5\u578B\u53F7\u3002")), /*#__PURE__*/React.createElement("button", {
+  }, "\uD83D\uDCA1 \u672A\u9650\u5B9A\u5C01\u88C5\u65F6\u65E0\u6CD5\u505A Pin-to-Pin \u5224\u5B9A\u3002\u5982\u9700\u8BE5\u6A21\u5F0F\uFF0C\u8BF7\u91CD\u65B0\u641C\u7D22\u5E76\u9009\u62E9\u5177\u4F53\u5C01\u88C5\u578B\u53F7\u3002")), pbElement("button", {
     onClick: runRecommend,
     disabled: phase === "loading",
     style: {
@@ -6472,7 +6585,7 @@ function Workbench({
       cursor: phase === "loading" ? "wait" : "pointer",
       letterSpacing: 1
     }
-  }, phase === "loading" ? "⏳ 推荐中…" : phase === "done" ? "🔄 重新推荐" : "🚀 AI 智能推荐"), /*#__PURE__*/React.createElement("button", {
+  }, phase === "loading" ? "⏳ 推荐中…" : phase === "done" ? "🔄 重新推荐" : "🚀 AI 智能推荐"), pbElement("button", {
     onClick: onBack,
     style: {
       width: "100%",
@@ -6485,11 +6598,11 @@ function Workbench({
       fontSize: 13,
       cursor: "pointer"
     }
-  }, "\u2190 \u91CD\u65B0\u641C\u7D22")), /*#__PURE__*/React.createElement("div", {
+  }, "\u2190 \u91CD\u65B0\u641C\u7D22")), pbElement("div", {
     style: {
       minHeight: 400
     }
-  }, note && /*#__PURE__*/React.createElement("div", {
+  }, note && pbElement("div", {
     style: {
       padding: "8px 14px",
       borderRadius: 7,
@@ -6499,30 +6612,30 @@ function Workbench({
       fontSize: 12,
       marginBottom: 12
     }
-  }, "\u2139\uFE0F ", note), phase === "idle" && /*#__PURE__*/React.createElement("div", {
+  }, "\u2139\uFE0F ", note), phase === "idle" && pbElement("div", {
     style: {
       textAlign: "center",
       paddingTop: 150,
       color: C.textMute
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       fontSize: 16,
       fontWeight: 600,
       color: C.textSec,
       marginBottom: 6
     }
-  }, "\u8C03\u6574\u53C2\u6570\u540E\uFF0C\u70B9\u51FB\u300CAI \u667A\u80FD\u63A8\u8350\u300D"), /*#__PURE__*/React.createElement("div", {
+  }, "\u8C03\u6574\u53C2\u6570\u540E\uFF0C\u70B9\u51FB\u300CAI \u667A\u80FD\u63A8\u8350\u300D"), pbElement("div", {
     style: {
       fontSize: 13
     }
-  }, "AI\u63A8\u8350\u5019\u9009 \u2192 \u672C\u5730\u5E93\u6821\u9A8C \u2192 \u7B97\u6CD5\u8BC4\u5206 \u2192 \u8F93\u51FA Top 5")), phase === "loading" && /*#__PURE__*/React.createElement("div", {
+  }, "AI\u63A8\u8350\u5019\u9009 \u2192 \u672C\u5730\u5E93\u6821\u9A8C \u2192 \u7B97\u6CD5\u8BC4\u5206 \u2192 \u8F93\u51FA Top 5")), phase === "loading" && pbElement("div", {
     style: {
       textAlign: "center",
       paddingTop: 150,
       color: C.textMute
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       width: 38,
       height: 38,
@@ -6532,7 +6645,7 @@ function Workbench({
       animation: "spin 0.8s linear infinite",
       margin: "0 auto 14px"
     }
-  }), "\u6B63\u5728\u63A8\u8350\uFF08AI\u5019\u9009 \u2192 \u672C\u5730\u5E93\u6821\u9A8C \u2192 \u8BC4\u5206\u6DD8\u6C70\uFF09\uFF0C\u7EA6\u9700 10\u201330 \u79D2\u2026"), phase === "done" && result && /*#__PURE__*/React.createElement("div", {
+  }), "\u6B63\u5728\u63A8\u8350\uFF08AI\u5019\u9009 \u2192 \u672C\u5730\u5E93\u6821\u9A8C \u2192 \u8BC4\u5206\u6DD8\u6C70\uFF09\uFF0C\u7EA6\u9700 10\u201330 \u79D2\u2026"), phase === "done" && result && pbElement("div", {
     style: {
       animation: "fadeUp 0.4s ease both"
     }
@@ -6546,7 +6659,7 @@ function Workbench({
       (groups[key] || (groups[key] = [])).push(e);
     }
     const entries = Object.entries(groups).sort((a, b) => b[1].length - a[1].length);
-    return /*#__PURE__*/React.createElement("div", {
+    return pbElement("div", {
       style: {
         padding: "12px 16px",
         borderRadius: 8,
@@ -6554,14 +6667,14 @@ function Workbench({
         border: `1px solid ${C.border}`,
         marginBottom: 14
       }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, pbElement("div", {
       style: {
         fontSize: 13,
         fontWeight: 700,
         color: C.text,
         marginBottom: 8
       }
-    }, "\u4E3A\u4EC0\u4E48\u6CA1\u6709\u63A8\u8350\u7ED3\u679C\uFF1F", result.eliminated.length, " \u4E2A\u5019\u9009\u7684\u6392\u9664\u539F\u56E0\u5206\u5E03\uFF1A"), entries.map(([k, v]) => /*#__PURE__*/React.createElement("div", {
+    }, "\u4E3A\u4EC0\u4E48\u6CA1\u6709\u63A8\u8350\u7ED3\u679C\uFF1F", result.eliminated.length, " \u4E2A\u5019\u9009\u7684\u6392\u9664\u539F\u56E0\u5206\u5E03\uFF1A"), entries.map(([k, v]) => pbElement("div", {
       key: k,
       style: {
         display: "flex",
@@ -6570,19 +6683,19 @@ function Workbench({
         padding: "4px 0",
         fontSize: 12
       }
-    }, /*#__PURE__*/React.createElement("span", {
+    }, pbElement("span", {
       style: {
         minWidth: 26,
         fontWeight: 700,
         color: C.amber,
         fontFamily: "'DM Mono',monospace"
       }
-    }, v.length), /*#__PURE__*/React.createElement("span", {
+    }, v.length), pbElement("span", {
       style: {
         flex: 1,
         color: C.textSec
       }
-    }, k), /*#__PURE__*/React.createElement("span", {
+    }, k), pbElement("span", {
       style: {
         fontSize: 11,
         color: C.textMute,
@@ -6592,7 +6705,7 @@ function Workbench({
         whiteSpace: "nowrap",
         maxWidth: 280
       }
-    }, v.slice(0, 3).map(x => x.partNumber).join("、"), v.length > 3 ? ` 等 ${v.length} 个` : ""))), /*#__PURE__*/React.createElement("div", {
+    }, v.slice(0, 3).map(x => x.partNumber).join("、"), v.length > 3 ? ` 等 ${v.length} 个` : ""))), pbElement("div", {
       style: {
         marginTop: 9,
         paddingTop: 9,
@@ -6601,7 +6714,7 @@ function Workbench({
         color: C.textMute
       }
     }, "\uD83D\uDCA1 ", entries[0] && /未查到/.test(entries[0][0]) ? "多数候选未查到数据：这些型号可能不在 ezPLM 白名单内，也未被 DigiKey/Mouser 精确匹配。可先确认该品类在库覆盖情况。" : "可尝试：放宽硬约束 / 切换到「功能兼容」模式 / 取消优选厂商限制 / 降低应用场景要求"));
-  })(), (result.recommendations || []).some(r => r._lowConfidence) && /*#__PURE__*/React.createElement("div", {
+  })(), (result.recommendations || []).some(r => r._lowConfidence) && pbElement("div", {
     style: {
       padding: "8px 14px",
       borderRadius: 7,
@@ -6611,7 +6724,7 @@ function Workbench({
       fontSize: 12,
       marginBottom: 12
     }
-  }, "\u26A0 \u4EE5\u4E0B\u5019\u9009\u7684\u8BC1\u636E\u53EF\u4FE1\u5EA6\u4F4E\u4E8E\u5E38\u89C4\u9608\u503C\uFF08\u591A\u4E3AAI\u6765\u6E90\u4E14\u8D44\u6599\u4E0D\u5168\uFF09\uFF0C\u4EC5\u4F9B\u53C2\u8003\u65B9\u5411\uFF0C\u52A1\u5FC5\u4EBA\u5DE5\u6838\u5BF9 datasheet \u540E\u518D\u51B3\u7B56"), (result.eliminated || []).some(e => /功能类别不符/.test(e.reason || "")) && /*#__PURE__*/React.createElement("div", {
+  }, "\u26A0 \u4EE5\u4E0B\u5019\u9009\u7684\u8BC1\u636E\u53EF\u4FE1\u5EA6\u4F4E\u4E8E\u5E38\u89C4\u9608\u503C\uFF08\u591A\u4E3AAI\u6765\u6E90\u4E14\u8D44\u6599\u4E0D\u5168\uFF09\uFF0C\u4EC5\u4F9B\u53C2\u8003\u65B9\u5411\uFF0C\u52A1\u5FC5\u4EBA\u5DE5\u6838\u5BF9 datasheet \u540E\u518D\u51B3\u7B56"), (result.eliminated || []).some(e => /功能类别不符/.test(e.reason || "")) && pbElement("div", {
     style: {
       padding: "8px 14px",
       borderRadius: 7,
@@ -6621,7 +6734,7 @@ function Workbench({
       fontSize: 12,
       marginBottom: 12
     }
-  }, "\u2713 \u5DF2\u81EA\u52A8\u62E6\u622A ", (result.eliminated || []).filter(e => /功能类别不符/.test(e.reason || "")).length, " \u4E2A\u529F\u80FD\u7C7B\u522B\u4E0D\u7B26\u7684\u5019\u9009\uFF08\u89C1\u4E0B\u65B9\u6DD8\u6C70\u5217\u8868\uFF09"), /*#__PURE__*/React.createElement("div", {
+  }, "\u2713 \u5DF2\u81EA\u52A8\u62E6\u622A ", (result.eliminated || []).filter(e => /功能类别不符/.test(e.reason || "")).length, " \u4E2A\u529F\u80FD\u7C7B\u522B\u4E0D\u7B26\u7684\u5019\u9009\uFF08\u89C1\u4E0B\u65B9\u6DD8\u6C70\u5217\u8868\uFF09"), pbElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
@@ -6630,30 +6743,30 @@ function Workbench({
       flexWrap: "wrap",
       gap: 8
     }
-  }, /*#__PURE__*/React.createElement("h3", {
+  }, pbElement("h3", {
     style: {
       fontSize: 16,
       fontWeight: 700
     }
-  }, result._noCandidates ? "排除详情" : "推荐结果", " ", /*#__PURE__*/React.createElement("span", {
+  }, result._noCandidates ? "排除详情" : "推荐结果", " ", pbElement("span", {
     style: {
       fontSize: 13,
       color: C.textMute,
       fontWeight: 400
     }
-  }, "\xB7 ", result.recommendations.length, " \u4E2A\u66FF\u4EE3\u65B9\u6848", result.basePrice != null ? ` · 原型号 $${result.basePrice}` : "", " \xB7 \u70B9\u51FB\u578B\u53F7\u67E5\u770B\u91C7\u8D2D\u8BE6\u60C5")), /*#__PURE__*/React.createElement("div", {
+  }, "\xB7 ", result.recommendations.length, " \u4E2A\u66FF\u4EE3\u65B9\u6848", result.basePrice != null ? ` · 原型号 $${result.basePrice}` : "", " \xB7 \u70B9\u51FB\u578B\u53F7\u67E5\u770B\u91C7\u8D2D\u8BE6\u60C5")), pbElement("div", {
     style: {
       display: "flex",
       gap: 6
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       display: "flex",
       borderRadius: 7,
       border: `1px solid ${C.border}`,
       overflow: "hidden"
     }
-  }, /*#__PURE__*/React.createElement("button", {
+  }, pbElement("button", {
     onClick: () => setView("cards"),
     style: {
       padding: "5px 14px",
@@ -6663,7 +6776,7 @@ function Workbench({
       fontSize: 12,
       cursor: "pointer"
     }
-  }, "\u5361\u7247"), /*#__PURE__*/React.createElement("button", {
+  }, "\u5361\u7247"), pbElement("button", {
     type: "button",
     role: "tab",
     "aria-selected": view === "table",
@@ -6676,7 +6789,7 @@ function Workbench({
       fontSize: 12,
       cursor: "pointer"
     }
-  }, "\u5BF9\u6BD4\u8868")), /*#__PURE__*/React.createElement("button", {
+  }, "\u5BF9\u6BD4\u8868")), pbElement("button", {
     onClick: exportMD,
     style: {
       padding: "5px 12px",
@@ -6686,7 +6799,7 @@ function Workbench({
       fontSize: 12,
       cursor: "pointer"
     }
-  }, "\uD83D\uDCC4 MD"), /*#__PURE__*/React.createElement("button", {
+  }, "\uD83D\uDCC4 MD"), pbElement("button", {
     onClick: exportCSV,
     style: {
       padding: "5px 12px",
@@ -6696,7 +6809,7 @@ function Workbench({
       fontSize: 12,
       cursor: "pointer"
     }
-  }, "\uD83D\uDCCA CSV"))), view === "cards" ? /*#__PURE__*/React.createElement(React.Fragment, null, (result.recommendations || []).map((rec, i) => /*#__PURE__*/React.createElement(ResultCard, {
+  }, "\uD83D\uDCCA CSV"))), view === "cards" ? pbElement(React.Fragment, null, (result.recommendations || []).map((rec, i) => pbElement(ResultCard, {
     key: rec.partNumber,
     rec: rec,
     index: i,
@@ -6705,11 +6818,11 @@ function Workbench({
       setDetailPN(pn);
       setDetailRec(r);
     }
-  })), (result.pendingVerification || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+  })), (result.pendingVerification || []).length > 0 && pbElement("div", {
     style: {
       marginTop: 16
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       padding: "9px 14px",
       borderRadius: 8,
@@ -6719,12 +6832,12 @@ function Workbench({
       fontSize: 12,
       marginBottom: 10
     }
-  }, "\uD83D\uDD0D \u5F85\u6838\u9A8C\u5019\u9009\uFF08", result.pendingVerification.length, " \u4E2A\uFF09\xB7 ", /*#__PURE__*/React.createElement("b", null, "\u4E0D\u8FDB\u5165\u6B63\u5F0F\u63A8\u8350\u6392\u540D"), "\u3002 \u539F\u56E0\u4E3A\u4EE5\u4E0B\u4E4B\u4E00\uFF1A\u786C\u7EA6\u675F\u5B57\u6BB5\u7F3A\u5931\u65E0\u6CD5\u9A8C\u8BC1\uFF08\u6309 fail-closed \u5904\u7406\uFF09\uFF0C \u6216\u578B\u53F7\u672A\u83B7 ezPLM / \u5206\u9500\u5546\u7CBE\u786E\u786E\u8BA4\u3002\u8BF7\u4EBA\u5DE5\u6838\u5BF9 datasheet \u540E\u518D\u51B3\u7B56"), result.pendingVerification.map((rec, i) => /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDD0D \u5F85\u6838\u9A8C\u5019\u9009\uFF08", result.pendingVerification.length, " \u4E2A\uFF09\xB7 ", pbElement("b", null, "\u4E0D\u8FDB\u5165\u6B63\u5F0F\u63A8\u8350\u6392\u540D"), "\u3002 \u539F\u56E0\u4E3A\u4EE5\u4E0B\u4E4B\u4E00\uFF1A\u786C\u7EA6\u675F\u5B57\u6BB5\u7F3A\u5931\u65E0\u6CD5\u9A8C\u8BC1\uFF08\u6309 fail-closed \u5904\u7406\uFF09\uFF0C \u6216\u578B\u53F7\u672A\u83B7 ezPLM / \u5206\u9500\u5546\u7CBE\u786E\u786E\u8BA4\u3002\u8BF7\u4EBA\u5DE5\u6838\u5BF9 datasheet \u540E\u518D\u51B3\u7B56"), result.pendingVerification.map((rec, i) => pbElement("div", {
     key: rec.partNumber,
     style: {
       opacity: .82
     }
-  }, /*#__PURE__*/React.createElement(ResultCard, {
+  }, pbElement(ResultCard, {
     rec: rec,
     index: i,
     market: market,
@@ -6733,10 +6846,10 @@ function Workbench({
       setDetailPN(pn);
       setDetailRec(r);
     }
-  }))))) : /*#__PURE__*/React.createElement(CompareTable, {
+  }))))) : pbElement(CompareTable, {
     original: original,
     recs: result.recommendations || []
-  }), (result.eliminated || []).length > 0 && /*#__PURE__*/React.createElement("details", {
+  }), (result.eliminated || []).length > 0 && pbElement("details", {
     open: !!result._noCandidates,
     style: {
       marginTop: 12,
@@ -6744,7 +6857,7 @@ function Workbench({
       border: `1px solid ${C.borderLight}`,
       background: "#fff"
     }
-  }, /*#__PURE__*/React.createElement("summary", {
+  }, pbElement("summary", {
     style: {
       padding: "11px 16px",
       cursor: "pointer",
@@ -6752,15 +6865,15 @@ function Workbench({
       color: C.textSec,
       fontWeight: 500
     }
-  }, "\uD83D\uDEAB \u88AB\u6DD8\u6C70\u7684\u5019\u9009\uFF08", result.eliminated.length, "\u4E2A\uFF09\xB7 \u6309\u7ED3\u8BBA\u53EF\u4FE1\u5EA6\u964D\u5E8F\uFF0C\u524D 5 \u4E2A\u53EF\u5C55\u5F00\u9010\u53C2\u6570\u5BF9\u6BD4"), /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDEAB \u88AB\u6DD8\u6C70\u7684\u5019\u9009\uFF08", result.eliminated.length, "\u4E2A\uFF09\xB7 \u6309\u7ED3\u8BBA\u53EF\u4FE1\u5EA6\u964D\u5E8F\uFF0C\u524D 5 \u4E2A\u53EF\u5C55\u5F00\u9010\u53C2\u6570\u5BF9\u6BD4"), pbElement("div", {
     style: {
       padding: "0 16px 12px"
     }
-  }, result.eliminated.map((e, i) => /*#__PURE__*/React.createElement(EliminatedRow, {
+  }, result.eliminated.map((e, i) => pbElement(EliminatedRow, {
     key: i,
     item: e,
     index: i
-  }))))), detailPN && /*#__PURE__*/React.createElement(PartDetailModal, {
+  }))))), detailPN && pbElement(PartDetailModal, {
     pn: detailPN,
     rec: detailRec,
     onClose: () => {
@@ -6873,7 +6986,7 @@ function App() {
       setBusy(false);
     }
   };
-  return /*#__PURE__*/React.createElement(React.Fragment, null, staleVer && /*#__PURE__*/React.createElement("div", {
+  return pbElement(React.Fragment, null, staleVer && pbElement("div", {
     style: {
       background: "#fff8e6",
       borderBottom: "1px solid #f0dca0",
@@ -6885,7 +6998,7 @@ function App() {
       gap: 10,
       justifyContent: "center"
     }
-  }, "\u26A0 \u9875\u9762\u7248\u672C v", APP_VERSION, " \u843D\u540E\u4E8E\u670D\u52A1\u7AEF v", staleVer, "\uFF0C\u90E8\u5206\u4FEE\u590D\u672A\u751F\u6548", /*#__PURE__*/React.createElement("button", {
+  }, "\u26A0 \u9875\u9762\u7248\u672C v", APP_VERSION, " \u843D\u540E\u4E8E\u670D\u52A1\u7AEF v", staleVer, "\uFF0C\u90E8\u5206\u4FEE\u590D\u672A\u751F\u6548", pbElement("button", {
     onClick: () => location.reload(),
     style: {
       padding: "3px 12px",
@@ -6897,13 +7010,13 @@ function App() {
       fontWeight: 600,
       cursor: "pointer"
     }
-  }, "\u5237\u65B0\u9875\u9762")), /*#__PURE__*/React.createElement("header", {
+  }, "\u5237\u65B0\u9875\u9762")), pbElement("header", {
     style: {
       background: "#fff",
       borderBottom: `1px solid ${C.border}`,
       padding: "12px 24px"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       maxWidth: 1400,
       margin: "0 auto",
@@ -6911,7 +7024,7 @@ function App() {
       alignItems: "center",
       gap: 10
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     style: {
       width: 38,
       height: 38,
@@ -6921,38 +7034,38 @@ function App() {
       alignItems: "center",
       justifyContent: "center"
     }
-  }, /*#__PURE__*/React.createElement("svg", {
+  }, pbElement("svg", {
     width: "22",
     height: "22",
     viewBox: "0 0 24 24",
     fill: "none"
-  }, /*#__PURE__*/React.createElement("path", {
+  }, pbElement("path", {
     d: "M12 2L3 7v10l9 5 9-5V7l-9-5z",
     stroke: "#fff",
     strokeWidth: "1.8",
     fill: "none"
-  }), /*#__PURE__*/React.createElement("path", {
+  }), pbElement("path", {
     d: "M12 7v10M7 9.5l5 3 5-3",
     stroke: "#fff",
     strokeWidth: "1.5",
     strokeLinecap: "round"
-  }))), /*#__PURE__*/React.createElement("div", {
+  }))), pbElement("div", {
     style: {
       flex: 1
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, pbElement("div", {
     "data-app-version": APP_VERSION,
     style: {
       fontSize: 17,
       fontWeight: 700,
       color: C.text
     }
-  }, "AltPart Pro"), /*#__PURE__*/React.createElement("div", {
+  }, "\u5143\u4EF6\u901A \xB7 PartBridge"), pbElement("div", {
     style: {
       fontSize: 11,
       color: C.textMute
     }
-  }, "\u5143\u5668\u4EF6\u66FF\u4EE3\u51B3\u7B56\u667A\u80FD\u4F53 \xB7 ezPLM\u96C6\u6210")), page === "workbench" && /*#__PURE__*/React.createElement("button", {
+  }, "\u67E5\u8BE2\u5143\u5668\u4EF6 \xB7 \u4E0B\u8F7D\u8BBE\u8BA1\u8D44\u6E90 \xB7 \u5BFB\u627E\u66FF\u4EE3\u6599")), pbElement(LanguageControl, null), page === "workbench" && pbElement("button", {
     onClick: () => setPage("home"),
     style: {
       padding: "8px 16px",
@@ -6963,15 +7076,15 @@ function App() {
       fontSize: 13,
       cursor: "pointer"
     }
-  }, "\u2190 \u91CD\u65B0\u641C\u7D22"))), /*#__PURE__*/React.createElement("main", {
+  }, "\u2190 \u91CD\u65B0\u641C\u7D22"))), pbElement(TranslationNotice, null), pbElement("main", {
     style: {
       minHeight: "calc(100vh - 130px)"
     }
-  }, page === "home" && /*#__PURE__*/React.createElement(HomePage, {
+  }, page === "home" && pbElement(HomePage, {
     onSubmit: analyze,
     busy: busy,
     err: homeErr
-  }), page === "variants" && variantBase && /*#__PURE__*/React.createElement(VariantPicker, {
+  }), page === "variants" && variantBase && pbElement(VariantPicker, {
     base: variantBase,
     onPick: v => {
       const params = (variantBase.parameters || []).map(p => (p.name.includes("封装") || String(p.nameEn || "").toLowerCase().includes("package")) && v.package ? {
@@ -6998,13 +7111,13 @@ function App() {
       setPage("workbench");
     },
     onBack: () => setPage("home")
-  }), page === "workbench" && original && /*#__PURE__*/React.createElement(Workbench, {
+  }), page === "workbench" && original && pbElement(Workbench, {
     key: original.partNumber,
     original: original,
     demoNote: demoNote,
     onBack: () => setPage("home"),
     onSwitchVariant: v => analyze(v.pn)
-  })), /*#__PURE__*/React.createElement("footer", {
+  })), pbElement("footer", {
     "data-app-version": APP_VERSION,
     style: {
       textAlign: "center",
@@ -7014,6 +7127,6 @@ function App() {
       color: C.textMute,
       background: "#fff"
     }
-  }, "AltPart Pro \xB7 ezPLM\u5143\u5668\u4EF6\u5E93 \xB7 \u5B9E\u65F6\u884C\u60C5 \xB7 \u573A\u666F\u5316\u66FF\u4EE3 \xB7 \u786E\u5B9A\u6027\u8BC4\u5206"));
+  }, "\u5143\u4EF6\u901A \xB7 ezPLM\u5143\u5668\u4EF6\u5E93 \xB7 \u8BBE\u8BA1\u8D44\u6E90 \xB7 \u5B9E\u65F6\u884C\u60C5 \xB7 \u66FF\u4EE3\u6599\u63A8\u8350"));
 }
-ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(App, null));
+ReactDOM.createRoot(document.getElementById("root")).render(pbElement(App, null));
